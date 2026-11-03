@@ -14,6 +14,13 @@ data class ContactEntry(
     val updatedAt: Long
 )
 
+data class ContactNote(
+    val id: Long,
+    val entryId: Long,
+    val text: String,
+    val createdAt: Long
+)
+
 data class AttachmentEntry(
     val id: Long,
     val recordId: Long,
@@ -26,7 +33,7 @@ data class AttachmentEntry(
  * Local-first storage: no Contacts Provider access and no network dependency.
  * A text edit writes immediately; image/voice files remain in private app storage.
  */
-class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null, 1) {
+class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null, 2) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             """CREATE TABLE entries (
@@ -50,10 +57,54 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
             )"""
         )
         db.execSQL("CREATE INDEX attachments_record ON attachments(record_id)")
+        createNotesTable(db)
+    }
+
+    private fun createNotesTable(db: SQLiteDatabase) {
+        db.execSQL(
+            """CREATE TABLE IF NOT EXISTS notes (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               entry_id INTEGER NOT NULL,
+               text TEXT NOT NULL DEFAULT '',
+               created_at INTEGER NOT NULL,
+               FOREIGN KEY(entry_id) REFERENCES entries(id)
+            )"""
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS notes_entry ON notes(entry_id)")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        // Schema v1. Future migrations must preserve user notes and recordings.
+        if (oldVersion < 2) createNotesTable(db)
+    }
+
+    fun saveNote(noteId: Long, entryId: Long, text: String): Long {
+        require(entryId > 0)
+        val values = ContentValues().apply { put("text", text) }
+        return if (noteId > 0) {
+            writableDatabase.update("notes", values, "id=? AND entry_id=?",
+                arrayOf(noteId.toString(), entryId.toString()))
+            noteId
+        } else {
+            values.put("entry_id", entryId)
+            values.put("created_at", System.currentTimeMillis())
+            writableDatabase.insertOrThrow("notes", null, values)
+        }
+    }
+
+    fun notes(entryId: Long): List<ContactNote> {
+        val result = mutableListOf<ContactNote>()
+        readableDatabase.query("notes", null, "entry_id=?", arrayOf(entryId.toString()),
+            null, null, "created_at ASC").use { cursor ->
+            while (cursor.moveToNext()) {
+                result += ContactNote(
+                    cursor.getLong(cursor.getColumnIndexOrThrow("id")),
+                    entryId,
+                    cursor.getString(cursor.getColumnIndexOrThrow("text")),
+                    cursor.getLong(cursor.getColumnIndexOrThrow("created_at"))
+                )
+            }
+        }
+        return result
     }
 
     fun save(id: Long, phone: String, note: String, tags: Set<String>): Long {
@@ -127,7 +178,7 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
     // Small deterministic heuristic. Never invents a person's name; exact company
     // strings found in separate notes form one group in the list.
     private fun extractCompany(text: String): String {
-        val regex = Regex("""(مبلمان|کابینت|فروشگاه|شرکت|دفتر معماری)\s+([\p{L}\p{N}_‌-]+)""")
-        return regex.find(text)?.value?.trim().orEmpty()
+        val regex = Regex("""(?:فروشگاه\s+)?(?:مبلمان|کابینت|شرکت|دفتر معماری)\s+[\p{L}\p{N}_‌-]+""")
+        return regex.find(text)?.value?.removePrefix("فروشگاه ")?.trim().orEmpty()
     }
 }

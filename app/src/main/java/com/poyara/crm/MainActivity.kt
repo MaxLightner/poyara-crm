@@ -6,6 +6,8 @@ import android.content.ComponentName
 import android.content.Context
 import android.graphics.drawable.Icon
 import android.media.MediaRecorder
+import android.media.MediaPlayer
+import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
@@ -13,6 +15,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -24,6 +27,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.window.Dialog
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -76,6 +82,13 @@ private fun CrmHome() {
     var recorder by remember { mutableStateOf<MediaRecorder?>(null) }
     var audioFile by remember { mutableStateOf<File?>(null) }
     var isRecording by remember { mutableStateOf(false) }
+    var additionalNotes by remember { mutableStateOf(emptyList<ContactNote>()) }
+    var noteDraft by remember { mutableStateOf("") }
+    var editingNoteId by remember { mutableLongStateOf(0L) }
+    var playingPath by remember { mutableStateOf<String?>(null) }
+    var audioPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
+    var photoPreview by remember { mutableStateOf<String?>(null) }
+    val backup = remember { CrmBackup(context.applicationContext, db) }
 
     fun refresh() {
         allEntries = db.all()
@@ -109,6 +122,9 @@ private fun CrmHome() {
         phone = entry.phone
         note = entry.note
         chosenTags = entry.tags
+        additionalNotes = db.notes(entry.id)
+        noteDraft = ""
+        editingNoteId = 0L
         page = "capture"
         fileRevision++
     }
@@ -118,6 +134,9 @@ private fun CrmHome() {
         phone = ""
         note = ""
         chosenTags = emptySet()
+        additionalNotes = emptyList()
+        noteDraft = ""
+        editingNoteId = 0L
         page = "capture"
         fileRevision++
     }
@@ -200,6 +219,60 @@ private fun CrmHome() {
         cameraLauncher.launch(uri)
     }
 
+    fun saveAdditionalNote(text: String) {
+        val id = ensureRecord()
+        editingNoteId = db.saveNote(editingNoteId, id, text)
+        additionalNotes = db.notes(id)
+    }
+
+    fun toggleAudio(path: String) {
+        audioPlayer?.release()
+        audioPlayer = null
+        if (playingPath == path) {
+            playingPath = null
+            return
+        }
+        try {
+            val player = MediaPlayer()
+            player.setDataSource(path)
+            player.prepare()
+            player.setOnCompletionListener {
+                it.release()
+                audioPlayer = null
+                playingPath = null
+            }
+            player.start()
+            audioPlayer = player
+            playingPath = path
+        } catch (error: Exception) {
+            playingPath = null
+            Toast.makeText(context, "فایل صوتی باز نشد", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri ->
+        if (uri != null) {
+            runCatching { backup.exportTo(uri) }
+                .onSuccess { Toast.makeText(context, "پشتیبان $it پرونده ساخته شد", Toast.LENGTH_LONG).show() }
+                .onFailure { Toast.makeText(context, "خطا در پشتیبان‌گیری: ${it.message}", Toast.LENGTH_LONG).show() }
+        }
+    }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            runCatching { backup.importFrom(uri) }
+                .onSuccess {
+                    refresh()
+                    Toast.makeText(context, "$it پرونده جدید بازیابی شد", Toast.LENGTH_LONG).show()
+                }
+                .onFailure { Toast.makeText(context, "خطا در بازیابی: ${it.message}", Toast.LENGTH_LONG).show() }
+        }
+    }
+
     val files = remember(recordId, fileRevision) {
         if (recordId > 0) db.attachments(recordId) else emptyList()
     }
@@ -279,13 +352,48 @@ private fun CrmHome() {
                 if (files.isNotEmpty()) {
                     Text("پیوست‌ها (${files.size})", fontWeight = FontWeight.Bold)
                     files.forEachIndexed { index, attachment ->
+                        OutlinedButton(
+                            onClick = {
+                                if (attachment.type == "audio") toggleAudio(attachment.filePath)
+                                else photoPreview = attachment.filePath
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            val label = if (attachment.type == "audio") {
+                                if (playingPath == attachment.filePath) "■ توقف" else "▶ پخش"
+                            } else "▣ نمایش عکس"
+                            Text("${index + 1}. $label")
+                        }
+                    }
+                }
+
+                Text("یادداشت‌های تکمیلی", fontWeight = FontWeight.SemiBold)
+                additionalNotes.forEachIndexed { index, item ->
+                    Card(Modifier.fillMaxWidth().clickable {
+                        editingNoteId = item.id
+                        noteDraft = item.text
+                    }) {
                         Text(
-                            "${index + 1}. " +
-                                if (attachment.type == "audio") "فایل صوتی ثبت‌شده" else "عکس ثبت‌شده",
-                            style = MaterialTheme.typography.bodyMedium
+                            "${index + 1}. ${item.text.ifBlank { "یادداشت خالی" }}",
+                            modifier = Modifier.padding(12.dp),
+                            maxLines = 4
                         )
                     }
                 }
+                TextButton(onClick = {
+                    editingNoteId = 0L
+                    noteDraft = ""
+                }) { Text("+ یادداشت جدید") }
+                OutlinedTextField(
+                    value = noteDraft,
+                    onValueChange = {
+                        noteDraft = it
+                        saveAdditionalNote(it)
+                    },
+                    label = { Text(if (editingNoteId == 0L) "یادداشت تازه (ذخیره خودکار)" else "ویرایش یادداشت") },
+                    minLines = 2,
+                    modifier = Modifier.fillMaxWidth()
+                )
 
                 Text("برچسب‌ها", fontWeight = FontWeight.SemiBold)
                 Row(
@@ -331,6 +439,14 @@ private fun CrmHome() {
                 )
             }
         } else {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = {
+                    exportLauncher.launch("poyara-backup.zip")
+                }) { Text("پشتیبان ZIP") }
+                OutlinedButton(onClick = {
+                    importLauncher.launch(arrayOf("application/zip", "application/octet-stream"))
+                }) { Text("بازیابی پشتیبان") }
+            }
             OutlinedTextField(
                 value = search,
                 onValueChange = { search = it },
@@ -353,7 +469,8 @@ private fun CrmHome() {
             val filtered = allEntries.filter { entry ->
                 (filterTag == "همه" || filterTag in entry.tags) &&
                     (search.isBlank() || listOf(entry.phone, entry.note, entry.company, entry.tags.joinToString())
-                        .any { it.contains(search, ignoreCase = true) })
+                        .any { it.contains(search, ignoreCase = true) } ||
+                        db.notes(entry.id).any { it.text.contains(search, ignoreCase = true) })
             }
             LazyColumn(
                 Modifier.fillMaxSize(),
@@ -389,5 +506,31 @@ private fun CrmHome() {
                 }
             }
         }
+        if (photoPreview != null) {
+            Dialog(onDismissRequest = { photoPreview = null }) {
+                Surface(shape = RoundedCornerShape(16.dp)) {
+                    Column(Modifier.padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        val bitmap = remember(photoPreview) {
+                            BitmapFactory.decodeFile(
+                                photoPreview,
+                                BitmapFactory.Options().apply { inSampleSize = 2 }
+                            )?.asImageBitmap()
+                        }
+                        if (bitmap != null) {
+                            Image(
+                                bitmap = bitmap,
+                                contentDescription = "عکس پیوست",
+                                modifier = Modifier.fillMaxWidth().heightIn(max = 550.dp),
+                                contentScale = ContentScale.Fit
+                            )
+                        } else {
+                            Text("تصویر قابل نمایش نیست")
+                        }
+                        TextButton(onClick = { photoPreview = null }) { Text("بستن") }
+                    }
+                }
+            }
+        }
+
     }
 }
