@@ -1,6 +1,10 @@
 package com.poyara.crm
 
 import android.Manifest
+import android.app.role.RoleManager
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
 import android.app.StatusBarManager
 import android.content.ComponentName
 import android.content.Context
@@ -16,6 +20,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -27,6 +32,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.window.Dialog
@@ -49,9 +56,26 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme {
+            MaterialTheme(
+                colorScheme = lightColorScheme(
+                    primary = Color(0xFF08685F),
+                    onPrimary = Color.White,
+                    primaryContainer = Color(0xFFD8F3E9),
+                    secondary = Color(0xFF4F6573),
+                    background = Color(0xFFF4F7F8),
+                    surface = Color.White,
+                    surfaceVariant = Color(0xFFE9EFF0),
+                    onSurface = Color(0xFF1C3038),
+                    outline = Color(0xFFB5C4C6)
+                ),
+                shapes = Shapes(
+                    small = RoundedCornerShape(12.dp),
+                    medium = RoundedCornerShape(18.dp),
+                    large = RoundedCornerShape(26.dp)
+                )
+            ) {
                 CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
-                    CrmHome()
+                    CrmHome(intent?.getLongExtra("record_id", 0L) ?: 0L)
                 }
             }
         }
@@ -66,14 +90,15 @@ private fun inferredTags(text: String): Set<String> = buildSet {
 }
 
 @Composable
-private fun CrmHome() {
+private fun CrmHome(initialRecordId: Long) {
     val context = LocalContext.current
     val db = remember { CrmDb(context.applicationContext) }
     var page by rememberSaveable { mutableStateOf("capture") }
-    var recordId by rememberSaveable { mutableLongStateOf(0L) }
-    var phone by rememberSaveable { mutableStateOf("") }
-    var note by rememberSaveable { mutableStateOf("") }
-    var chosenTags by remember { mutableStateOf(setOf<String>()) }
+    val startupEntry = remember(initialRecordId) { db.all().find { it.id == initialRecordId } }
+    var recordId by rememberSaveable { mutableLongStateOf(startupEntry?.id ?: 0L) }
+    var phone by rememberSaveable { mutableStateOf(startupEntry?.phone.orEmpty()) }
+    var note by rememberSaveable { mutableStateOf(startupEntry?.note.orEmpty()) }
+    var chosenTags by remember { mutableStateOf(startupEntry?.tags ?: emptySet()) }
     var allEntries by remember { mutableStateOf(db.all()) }
     var fileRevision by remember { mutableIntStateOf(0) }
     var search by rememberSaveable { mutableStateOf("") }
@@ -82,13 +107,23 @@ private fun CrmHome() {
     var recorder by remember { mutableStateOf<MediaRecorder?>(null) }
     var audioFile by remember { mutableStateOf<File?>(null) }
     var isRecording by remember { mutableStateOf(false) }
-    var additionalNotes by remember { mutableStateOf(emptyList<ContactNote>()) }
+    var additionalNotes by remember { mutableStateOf(startupEntry?.let { db.notes(it.id) } ?: emptyList()) }
     var noteDraft by remember { mutableStateOf("") }
     var editingNoteId by remember { mutableLongStateOf(0L) }
     var playingPath by remember { mutableStateOf<String?>(null) }
     var audioPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
     var photoPreview by remember { mutableStateOf<String?>(null) }
     val backup = remember { CrmBackup(context.applicationContext, db) }
+    var smsBody by rememberSaveable { mutableStateOf(startupEntry?.let { db.smsDraft(it.id) } ?: "") }
+    var callerEnabled by remember { mutableStateOf(false) }
+    val roleManager = remember {
+        if (Build.VERSION.SDK_INT >= 29) context.getSystemService(RoleManager::class.java) else null
+    }
+    LaunchedEffect(Unit) {
+        callerEnabled = if (Build.VERSION.SDK_INT >= 29) {
+            roleManager?.isRoleHeld(RoleManager.ROLE_CALL_SCREENING) == true
+        } else false
+    }
 
     fun refresh() {
         allEntries = db.all()
@@ -125,6 +160,7 @@ private fun CrmHome() {
         additionalNotes = db.notes(entry.id)
         noteDraft = ""
         editingNoteId = 0L
+        smsBody = db.smsDraft(entry.id)
         page = "capture"
         fileRevision++
     }
@@ -137,8 +173,26 @@ private fun CrmHome() {
         additionalNotes = emptyList()
         noteDraft = ""
         editingNoteId = 0L
+        smsBody = ""
         page = "capture"
         fileRevision++
+    }
+
+    fun goToMessages() {
+        if (recordId == 0L && (phone.isNotBlank() || note.isNotBlank())) ensureRecord()
+        if (recordId > 0L) {
+            smsBody = db.smsDraft(recordId)
+            page = "messages"
+        } else {
+            page = "list"
+            Toast.makeText(context, "ابتدا مخاطب را انتخاب کن", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun callNumber(value: String) {
+        if (!openDialer(context, value)) {
+            Toast.makeText(context, "برنامه شماره‌گیر پیدا نشد", Toast.LENGTH_SHORT).show()
+        }
     }
 
     fun beginRecording() {
@@ -273,36 +327,100 @@ private fun CrmHome() {
         }
     }
 
+    val roleLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        callerEnabled = if (Build.VERSION.SDK_INT >= 29) {
+            roleManager?.isRoleHeld(RoleManager.ROLE_CALL_SCREENING) == true
+        } else false
+    }
+
+    fun requestCallerRole() {
+        if (Build.VERSION.SDK_INT >= 29 &&
+            roleManager?.isRoleAvailable(RoleManager.ROLE_CALL_SCREENING) == true
+        ) {
+            roleLauncher.launch(roleManager.createRequestRoleIntent(RoleManager.ROLE_CALL_SCREENING))
+        } else {
+            Toast.makeText(context, "شناسایی تماس در این گوشی پشتیبانی نشد", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    val notificationPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { allowed ->
+        if (allowed) requestCallerRole()
+        else Toast.makeText(context, "نمایش جزئیات تماس به اجازه اعلان نیاز دارد", Toast.LENGTH_LONG).show()
+    }
+
+    fun activateCallerContext() {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        else requestCallerRole()
+    }
+
     val files = remember(recordId, fileRevision) {
         if (recordId > 0) db.attachments(recordId) else emptyList()
     }
 
+    Scaffold(
+        containerColor = Color(0xFFF4F7F8),
+        bottomBar = {
+            NavigationBar(containerColor = Color.White, tonalElevation = 8.dp) {
+                listOf(
+                    Triple("capture", "ثبت سریع", "✎"),
+                    Triple("list", "مخاطبان", "▦"),
+                    Triple("messages", "پیامک", "✉")
+                ).forEach { (key, title, symbol) ->
+                    NavigationBarItem(
+                        selected = page == key,
+                        onClick = {
+                            if (key == "list") { refresh(); page = key }
+                            else if (key == "messages") goToMessages()
+                            else page = key
+                        },
+                        icon = { Text(symbol, style = MaterialTheme.typography.titleLarge) },
+                        label = { Text(title, style = MaterialTheme.typography.labelMedium) }
+                    )
+                }
+            }
+        }
+    ) { insets ->
     Column(
-        Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)
-            .systemBarsPadding().padding(16.dp),
+        Modifier.fillMaxSize().padding(insets).padding(horizontal = 16.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("پویارا CRM", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.weight(1f))
-            if (page == "capture") TextButton(onClick = { newEntry() }) { Text("+ مخاطب جدید") }
-        }
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(
-                onClick = { page = "capture" },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (page == "capture") MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.secondary
-                )
-            ) { Text("ثبت سریع") }
-            Button(
-                onClick = { page = "list"; refresh() },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (page == "list") MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.secondary
-                )
-            ) { Text("مخاطبان (${allEntries.size})") }
+        Box(
+            modifier = Modifier.fillMaxWidth()
+                .background(
+                    Brush.horizontalGradient(listOf(Color(0xFF0B7569), Color(0xFF123D48))),
+                    RoundedCornerShape(24.dp)
+                ).padding(horizontal = 18.dp, vertical = 14.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column {
+                    Text("POYARA", color = Color(0xFFAEF3DF),
+                        style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+                    Text(
+                        when (page) {
+                            "list" -> "شبکه ارتباطات کاری"
+                            "messages" -> "مرکز پیامک"
+                            else -> "ثبت فوری اطلاعات"
+                        },
+                        color = Color.White, style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                if (page == "capture") {
+                    TextButton(onClick = { newEntry() }) {
+                        Text("+ جدید", color = Color.White)
+                    }
+                } else {
+                    Text("${allEntries.size} مخاطب", color = Color(0xFFD2EEE7),
+                        style = MaterialTheme.typography.labelLarge)
+                }
+            }
         }
 
         if (page == "capture") {
@@ -324,6 +442,18 @@ private fun CrmHome() {
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { callNumber(phone) },
+                        enabled = phone.isNotBlank(),
+                        modifier = Modifier.weight(1f)
+                    ) { Text("☎ تماس") }
+                    OutlinedButton(
+                        onClick = { goToMessages() },
+                        enabled = phone.isNotBlank(),
+                        modifier = Modifier.weight(1f)
+                    ) { Text("✉ پیامک") }
+                }
                 OutlinedTextField(
                     value = note,
                     onValueChange = {
@@ -395,6 +525,21 @@ private fun CrmHome() {
                     modifier = Modifier.fillMaxWidth()
                 )
 
+                if (recordId > 0L) {
+                    val events = db.callEvents(recordId)
+                    if (events.isNotEmpty()) {
+                        Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                            Column(Modifier.padding(14.dp)) {
+                                Text("تماس‌های شناسایی‌شده", fontWeight = FontWeight.Bold)
+                                events.take(5).forEach { event ->
+                                    Text(event, style = MaterialTheme.typography.bodySmall,
+                                        modifier = Modifier.padding(top = 4.dp))
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Text("برچسب‌ها", fontWeight = FontWeight.SemiBold)
                 Row(
                     Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -410,6 +555,22 @@ private fun CrmHome() {
                             },
                             label = { Text(tag) }
                         )
+                    }
+                }
+
+                Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFE1F3EF))) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("شناسایی تماس‌های کاری", fontWeight = FontWeight.Bold)
+                        Text(
+                            if (callerEnabled) "فعال است؛ در تماس‌های شناخته‌شده یادداشت به صورت اعلان نمایش داده می‌شود."
+                            else "برای دیدن خلاصه پرونده هنگام تماس ورودی و خروجی، این گزینه را فعال کن.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        if (!callerEnabled) {
+                            TextButton(onClick = { activateCallerContext() }) {
+                                Text("فعال‌سازی شناسایی تماس")
+                            }
+                        }
                     }
                 }
 
@@ -437,6 +598,75 @@ private fun CrmHome() {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.secondary
                 )
+            }
+        } else if (page == "messages") {
+            Column(
+                Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                    Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                        Text("مخاطب", style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.secondary)
+                        Text(phone.ifBlank { "شماره ثبت نشده" },
+                            style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        val company = allEntries.find { it.id == recordId }?.company.orEmpty()
+                        if (company.isNotBlank()) Text(company,
+                            color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+                Text("متن‌های آماده", fontWeight = FontWeight.Bold)
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    listOf("پیگیری", "هماهنگی جلسه", "ارسال پیشنهاد", "تشکر").forEach { type ->
+                        AssistChip(
+                            onClick = {
+                                val company = allEntries.find { it.id == recordId }?.company.orEmpty()
+                                smsBody = smsTemplate(type, company)
+                                if (recordId > 0) db.saveSmsDraft(recordId, smsBody)
+                            },
+                            label = { Text(type) }
+                        )
+                    }
+                }
+                OutlinedTextField(
+                    value = smsBody,
+                    onValueChange = {
+                        smsBody = it
+                        if (recordId > 0) db.saveSmsDraft(recordId, it)
+                    },
+                    label = { Text("متن پیامک (ذخیره خودکار)") },
+                    minLines = 6,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = phone.isNotBlank() && smsBody.isNotBlank(),
+                    onClick = {
+                        val opened = openSmsComposer(context, phone, smsBody)
+                        if (opened && recordId > 0) db.markSmsOpened(recordId, smsBody)
+                        if (!opened) Toast.makeText(
+                            context, "برنامه پیامک پیدا نشد", Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                ) { Text("باز کردن پیامک برای بررسی و ارسال") }
+                Text(
+                    "ارسال نهایی در برنامه پیامک گوشی انجام می‌شود. CRM فقط بازشدن صفحه ارسال را ثبت می‌کند، نه تحویل پیام.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary
+                )
+                Text("پیام‌های آماده‌شده قبلی", fontWeight = FontWeight.Bold)
+                if (recordId > 0) db.smsHandoffs(recordId).forEach { item ->
+                    Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                        Column(Modifier.padding(12.dp)) {
+                            Text("انتقال به برنامه پیامک", style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary)
+                            Text(item, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
             }
         } else {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -500,6 +730,21 @@ private fun CrmHome() {
                                     color = MaterialTheme.colorScheme.primary,
                                     style = MaterialTheme.typography.labelMedium
                                 )
+                                HorizontalDivider(modifier = Modifier.padding(top = 7.dp, bottom = 3.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    TextButton(
+                                        onClick = { callNumber(entry.phone) },
+                                        enabled = entry.phone.isNotBlank()
+                                    ) { Text("☎ تماس") }
+                                    TextButton(
+                                        onClick = {
+                                            open(entry)
+                                            goToMessages()
+                                        },
+                                        enabled = entry.phone.isNotBlank()
+                                    ) { Text("✉ پیامک") }
+                                    TextButton(onClick = { open(entry) }) { Text("پرونده") }
+                                }
                             }
                         }
                     }
@@ -532,5 +777,6 @@ private fun CrmHome() {
             }
         }
 
+    }
     }
 }

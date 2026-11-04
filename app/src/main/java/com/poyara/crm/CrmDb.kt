@@ -33,7 +33,7 @@ data class AttachmentEntry(
  * Local-first storage: no Contacts Provider access and no network dependency.
  * A text edit writes immediately; image/voice files remain in private app storage.
  */
-class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null, 2) {
+class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null, 3) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             """CREATE TABLE entries (
@@ -58,6 +58,7 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
         )
         db.execSQL("CREATE INDEX attachments_record ON attachments(record_id)")
         createNotesTable(db)
+        createCommunicationsTables(db)
     }
 
     private fun createNotesTable(db: SQLiteDatabase) {
@@ -75,6 +76,7 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) createNotesTable(db)
+        if (oldVersion < 3) createCommunicationsTables(db)
     }
 
     fun saveNote(noteId: Long, entryId: Long, text: String): Long {
@@ -102,6 +104,102 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
                     cursor.getString(cursor.getColumnIndexOrThrow("text")),
                     cursor.getLong(cursor.getColumnIndexOrThrow("created_at"))
                 )
+            }
+        }
+        return result
+    }
+
+    private fun createCommunicationsTables(db: SQLiteDatabase) {
+        db.execSQL("""CREATE TABLE IF NOT EXISTS call_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entry_id INTEGER NOT NULL,
+            direction TEXT NOT NULL,
+            phone TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        )""")
+        db.execSQL("""CREATE TABLE IF NOT EXISTS sms_drafts (
+            entry_id INTEGER PRIMARY KEY,
+            body TEXT NOT NULL DEFAULT '',
+            updated_at INTEGER NOT NULL
+        )""")
+        db.execSQL("""CREATE TABLE IF NOT EXISTS sms_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entry_id INTEGER NOT NULL,
+            body TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        )""")
+    }
+
+    fun findByPhone(number: String): ContactEntry? {
+        val target = normalizePhone(number)
+        if (target.isBlank()) return null
+        val matches = all().filter { normalizePhone(it.phone) == target }
+        return matches.singleOrNull()
+    }
+
+    fun addCallEvent(entryId: Long, direction: String, phone: String) {
+        writableDatabase.insert("call_events", null, ContentValues().apply {
+            put("entry_id", entryId)
+            put("direction", direction)
+            put("phone", phone)
+            put("created_at", System.currentTimeMillis())
+        })
+    }
+
+    fun callEvents(entryId: Long): List<String> {
+        val result = mutableListOf<String>()
+        readableDatabase.query(
+            "call_events", arrayOf("direction", "created_at"),
+            "entry_id=?", arrayOf(entryId.toString()),
+            null, null, "created_at DESC", "15"
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val direction = cursor.getString(0)
+                val date = java.text.DateFormat.getDateTimeInstance(
+                    java.text.DateFormat.SHORT, java.text.DateFormat.SHORT
+                ).format(java.util.Date(cursor.getLong(1)))
+                result += "$direction · $date"
+            }
+        }
+        return result
+    }
+
+    fun smsDraft(entryId: Long): String =
+        readableDatabase.query(
+            "sms_drafts", arrayOf("body"), "entry_id=?",
+            arrayOf(entryId.toString()), null, null, null
+        ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else "" }
+
+    fun saveSmsDraft(entryId: Long, body: String) {
+        writableDatabase.insertWithOnConflict(
+            "sms_drafts", null, ContentValues().apply {
+                put("entry_id", entryId)
+                put("body", body)
+                put("updated_at", System.currentTimeMillis())
+            }, SQLiteDatabase.CONFLICT_REPLACE
+        )
+    }
+
+    fun markSmsOpened(entryId: Long, body: String) {
+        writableDatabase.insert("sms_events", null, ContentValues().apply {
+            put("entry_id", entryId)
+            put("body", body)
+            put("created_at", System.currentTimeMillis())
+        })
+    }
+
+    fun smsHandoffs(entryId: Long): List<String> {
+        val result = mutableListOf<String>()
+        readableDatabase.query(
+            "sms_events", arrayOf("body", "created_at"),
+            "entry_id=?", arrayOf(entryId.toString()),
+            null, null, "created_at DESC", "10"
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val date = java.text.DateFormat.getDateTimeInstance(
+                    java.text.DateFormat.SHORT, java.text.DateFormat.SHORT
+                ).format(java.util.Date(cursor.getLong(1)))
+                result += "$date · ${cursor.getString(0)}"
             }
         }
         return result
