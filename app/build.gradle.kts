@@ -44,5 +44,6 @@ dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("org.mapsforge:mapsforge-map-android:0.25.0")
     implementation("org.mapsforge:mapsforge-map-reader:0.25.0")
+    implementation("org.mapsforge:mapsforge-themes:0.25.0")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
