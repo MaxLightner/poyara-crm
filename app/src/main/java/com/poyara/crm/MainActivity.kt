@@ -359,6 +359,19 @@ private fun CrmHome(initialRecordId: Long) {
         else requestCallerRole()
     }
 
+    val mapLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        refresh()
+    }
+
+    fun openMap(entryId: Long) {
+        mapLauncher.launch(
+            Intent(context, OfflineMapActivity::class.java)
+                .putExtra("entry_id", entryId)
+        )
+    }
+
     val files = remember(recordId, fileRevision) {
         if (recordId > 0) db.attachments(recordId) else emptyList()
     }
@@ -465,6 +478,27 @@ private fun CrmHome(initialRecordId: Long) {
                     minLines = 5,
                     modifier = Modifier.fillMaxWidth()
                 )
+
+                Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFE3F3EF))) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        val current = allEntries.firstOrNull { it.id == recordId }
+                        Text("موقعیت مشتری", fontWeight = FontWeight.Bold)
+                        Text(
+                            if (current?.latitude != null && current.longitude != null)
+                                "موقعیت ثبت شده: %.5f، %.5f".format(
+                                    current.latitude, current.longitude
+                                )
+                            else "هنوز موقعیت ثبت نشده؛ GPS یا لمس روی نقشه",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Button(onClick = { openMap(ensureRecord()) }) {
+                            Text("⌖ ثبت روی نقشه یا GPS")
+                        }
+                    }
+                }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
@@ -669,6 +703,10 @@ private fun CrmHome(initialRecordId: Long) {
                 }
             }
         } else {
+            Button(
+                onClick = { openMap(0L) },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("⌖ نقشه مشتریان و افراد اطراف من") }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = {
                     exportLauncher.launch("poyara-backup.zip")

@@ -11,7 +11,10 @@ data class ContactEntry(
     val note: String,
     val company: String,
     val tags: Set<String>,
-    val updatedAt: Long
+    val updatedAt: Long,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    val locationSource: String? = null
 )
 
 data class ContactNote(
@@ -33,7 +36,7 @@ data class AttachmentEntry(
  * Local-first storage: no Contacts Provider access and no network dependency.
  * A text edit writes immediately; image/voice files remain in private app storage.
  */
-class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null, 3) {
+class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null, 4) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             """CREATE TABLE entries (
@@ -43,7 +46,10 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
                company TEXT NOT NULL DEFAULT '',
                tags TEXT NOT NULL DEFAULT '',
                created_at INTEGER NOT NULL,
-               updated_at INTEGER NOT NULL
+               updated_at INTEGER NOT NULL,
+               latitude REAL,
+               longitude REAL,
+               location_source TEXT
             )"""
         )
         db.execSQL(
@@ -77,6 +83,7 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) createNotesTable(db)
         if (oldVersion < 3) createCommunicationsTables(db)
+        if (oldVersion < 4) addLocationColumns(db)
     }
 
     fun saveNote(noteId: Long, entryId: Long, text: String): Long {
@@ -205,6 +212,43 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
         return result
     }
 
+    private fun addLocationColumns(db: SQLiteDatabase) {
+        db.execSQL("ALTER TABLE entries ADD COLUMN latitude REAL")
+        db.execSQL("ALTER TABLE entries ADD COLUMN longitude REAL")
+        db.execSQL("ALTER TABLE entries ADD COLUMN location_source TEXT")
+    }
+
+    /**
+     * Save a point for this person. Known people in the same company without any
+     * coordinates inherit the point; independently located branches are preserved.
+     */
+    fun setLocation(id: Long, latitude: Double, longitude: Double, source: String) {
+        require(latitude in -90.0..90.0 && longitude in -180.0..180.0)
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val company = db.rawQuery(
+                "SELECT company FROM entries WHERE id=?", arrayOf(id.toString())
+            ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else "" }
+            val values = ContentValues().apply {
+                put("latitude", latitude)
+                put("longitude", longitude)
+                put("location_source", source)
+            }
+            db.update("entries", values, "id=?", arrayOf(id.toString()))
+            if (company.isNotBlank()) {
+                db.update(
+                    "entries", values,
+                    "company=? AND latitude IS NULL AND longitude IS NULL",
+                    arrayOf(company)
+                )
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
     fun save(id: Long, phone: String, note: String, tags: Set<String>): Long {
         val now = System.currentTimeMillis()
         val company = extractCompany(note)
@@ -266,7 +310,16 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
                         cursor.getString(cursor.getColumnIndexOrThrow("note")),
                         cursor.getString(cursor.getColumnIndexOrThrow("company")),
                         encoded.split("|").filter { it.isNotBlank() }.toSet(),
-                        cursor.getLong(cursor.getColumnIndexOrThrow("updated_at"))
+                        cursor.getLong(cursor.getColumnIndexOrThrow("updated_at")),
+                        cursor.getColumnIndexOrThrow("latitude").let { idx ->
+                            if (cursor.isNull(idx)) null else cursor.getDouble(idx)
+                        },
+                        cursor.getColumnIndexOrThrow("longitude").let { idx ->
+                            if (cursor.isNull(idx)) null else cursor.getDouble(idx)
+                        },
+                        cursor.getColumnIndexOrThrow("location_source").let { idx ->
+                            if (cursor.isNull(idx)) null else cursor.getString(idx)
+                        }
                     )
                 }
             }

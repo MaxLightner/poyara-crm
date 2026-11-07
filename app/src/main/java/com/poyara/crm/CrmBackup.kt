@@ -24,6 +24,11 @@ class CrmBackup(private val context: Context, private val db: CrmDb) {
                 .put("phone", entry.phone)
                 .put("note", entry.note)
                 .put("tags", JSONArray(entry.tags.toList()))
+            if (entry.latitude != null && entry.longitude != null) {
+                obj.put("latitude", entry.latitude)
+                obj.put("longitude", entry.longitude)
+                obj.put("locationSource", entry.locationSource ?: "backup")
+            }
             val notes = JSONArray()
             db.notes(entry.id).forEach { item ->
                 notes.put(JSONObject().put("text", item.text))
@@ -113,6 +118,13 @@ class CrmBackup(private val context: Context, private val db: CrmDb) {
                 val tags = (0 until tagsJson.length()).map { tagsJson.getString(it) }.toSet()
                 val id = db.save(0L, phone, note, tags)
                 known.add(key)
+                if (item.has("latitude") && item.has("longitude")) {
+                    val lat = item.optDouble("latitude", Double.NaN)
+                    val lon = item.optDouble("longitude", Double.NaN)
+                    if (lat in -90.0..90.0 && lon in -180.0..180.0) {
+                        db.setLocation(id, lat, lon, item.optString("locationSource", "backup"))
+                    }
+                }
                 val notes = item.optJSONArray("notes") ?: JSONArray()
                 for (n in 0 until notes.length()) {
                     db.saveNote(0L, id, notes.getJSONObject(n).optString("text"))
