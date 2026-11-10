@@ -95,10 +95,21 @@ private fun CrmHome(initialRecordId: Long) {
     val db = remember { CrmDb(context.applicationContext) }
     var page by rememberSaveable { mutableStateOf("capture") }
     val startupEntry = remember(initialRecordId) { db.all().find { it.id == initialRecordId } }
+    val draftPrefs = remember { context.getSharedPreferences("capture_draft", Context.MODE_PRIVATE) }
     var recordId by rememberSaveable { mutableLongStateOf(startupEntry?.id ?: 0L) }
-    var phone by rememberSaveable { mutableStateOf(startupEntry?.phone.orEmpty()) }
-    var note by rememberSaveable { mutableStateOf(startupEntry?.note.orEmpty()) }
-    var chosenTags by remember { mutableStateOf(startupEntry?.tags ?: emptySet()) }
+    var personName by rememberSaveable {
+        mutableStateOf(startupEntry?.name ?: if (initialRecordId == 0L) draftPrefs.getString("name", "").orEmpty() else "")
+    }
+    var phone by rememberSaveable {
+        mutableStateOf(startupEntry?.phone ?: if (initialRecordId == 0L) draftPrefs.getString("phone", "").orEmpty() else "")
+    }
+    var note by rememberSaveable {
+        mutableStateOf(startupEntry?.note ?: if (initialRecordId == 0L) draftPrefs.getString("note", "").orEmpty() else "")
+    }
+    var chosenTags by remember {
+        mutableStateOf(startupEntry?.tags ?: if (initialRecordId == 0L)
+            (draftPrefs.getStringSet("tags", emptySet()) ?: emptySet()).toSet() else emptySet())
+    }
     var allEntries by remember { mutableStateOf(db.all()) }
     var fileRevision by remember { mutableIntStateOf(0) }
     var search by rememberSaveable { mutableStateOf("") }
@@ -130,23 +141,54 @@ private fun CrmHome(initialRecordId: Long) {
         fileRevision++
     }
 
+    fun persistDraft(
+        newName: String = personName,
+        newPhone: String = phone,
+        newNote: String = note,
+        newTags: Set<String> = chosenTags
+    ) {
+        if (recordId > 0L) return
+        draftPrefs.edit()
+            .putString("name", newName)
+            .putString("phone", newPhone)
+            .putString("note", newNote)
+            .putStringSet("tags", newTags.toSet())
+            .apply()
+    }
+
+    fun clearDraft() {
+        draftPrefs.edit().clear().apply()
+    }
+
     fun save(
+        newName: String = personName,
         newPhone: String = phone,
         newNote: String = note,
         newTags: Set<String> = chosenTags
     ): Long {
         val tags = newTags + inferredTags(newNote)
-        if (recordId == 0L && newPhone.isBlank() && newNote.isBlank() && tags.isEmpty()) return 0L
-        val id = db.save(recordId, newPhone, newNote, tags)
+        if (recordId == 0L && (newName.isBlank() || newPhone.isBlank())) {
+            persistDraft(newName, newPhone, newNote, tags)
+            return 0L
+        }
+        val id = db.save(recordId, newName, newPhone, newNote, tags)
         recordId = id
         chosenTags = tags
+        clearDraft()
         refresh()
         return id
     }
 
     fun ensureRecord(): Long {
         if (recordId == 0L) {
-            recordId = db.save(0L, phone, note, chosenTags)
+            if (personName.isBlank() || phone.isBlank()) {
+                Toast.makeText(context, "برای ثبت پرونده، نام و شماره تماس را وارد کن", Toast.LENGTH_SHORT).show()
+                return 0L
+            }
+            val tags = chosenTags + inferredTags(note)
+            recordId = db.save(0L, personName, phone, note, tags)
+            chosenTags = tags
+            clearDraft()
             refresh()
         }
         return recordId
@@ -154,6 +196,7 @@ private fun CrmHome(initialRecordId: Long) {
 
     fun open(entry: ContactEntry) {
         recordId = entry.id
+        personName = entry.name
         phone = entry.phone
         note = entry.note
         chosenTags = entry.tags
@@ -166,7 +209,9 @@ private fun CrmHome(initialRecordId: Long) {
     }
 
     fun newEntry() {
+        clearDraft()
         recordId = 0L
+        personName = ""
         phone = ""
         note = ""
         chosenTags = emptySet()
@@ -179,13 +224,12 @@ private fun CrmHome(initialRecordId: Long) {
     }
 
     fun goToMessages() {
-        if (recordId == 0L && (phone.isNotBlank() || note.isNotBlank())) ensureRecord()
+        if (recordId == 0L) ensureRecord()
         if (recordId > 0L) {
             smsBody = db.smsDraft(recordId)
             page = "messages"
         } else {
-            page = "list"
-            Toast.makeText(context, "ابتدا مخاطب را انتخاب کن", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "ابتدا نام و شماره تماس را وارد کن", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -197,6 +241,7 @@ private fun CrmHome(initialRecordId: Long) {
 
     fun beginRecording() {
         val id = ensureRecord()
+        if (id == 0L) return
         val folder = File(context.filesDir, "attachments").apply { mkdirs() }
         val target = File(folder, "voice_${id}_${System.currentTimeMillis()}.m4a")
         try {
@@ -239,8 +284,11 @@ private fun CrmHome(initialRecordId: Long) {
             isRecording = false
         }
         if (succeeded && target != null) {
-            db.addAttachment(ensureRecord(), "audio", target.absolutePath)
-            refresh()
+            val id = if (recordId > 0L) recordId else ensureRecord()
+            if (id > 0L) {
+                db.addAttachment(id, "audio", target.absolutePath)
+                refresh()
+            } else target.delete()
         }
     }
 
@@ -256,8 +304,11 @@ private fun CrmHome(initialRecordId: Long) {
     ) { photographed ->
         val file = pendingPhoto
         if (photographed && file != null) {
-            db.addAttachment(ensureRecord(), "photo", file.absolutePath)
-            refresh()
+            val id = if (recordId > 0L) recordId else ensureRecord()
+            if (id > 0L) {
+                db.addAttachment(id, "photo", file.absolutePath)
+                refresh()
+            } else file.delete()
         } else {
             file?.delete()
         }
@@ -266,6 +317,7 @@ private fun CrmHome(initialRecordId: Long) {
 
     fun takePhoto() {
         val id = ensureRecord()
+        if (id == 0L) return
         val folder = File(context.filesDir, "attachments").apply { mkdirs() }
         val file = File(folder, "photo_${id}_${System.currentTimeMillis()}.jpg")
         pendingPhoto = file
@@ -275,6 +327,7 @@ private fun CrmHome(initialRecordId: Long) {
 
     fun saveAdditionalNote(text: String) {
         val id = ensureRecord()
+        if (id == 0L) return
         editingNoteId = db.saveNote(editingNoteId, id, text)
         additionalNotes = db.notes(id)
     }
@@ -378,6 +431,21 @@ private fun CrmHome(initialRecordId: Long) {
 
     Scaffold(
         containerColor = Color(0xFFF4F7F8),
+        floatingActionButton = {
+            if (page == "capture" && personName.isNotBlank() && phone.isNotBlank()) {
+                FloatingActionButton(
+                    onClick = {
+                        if (save() > 0L) {
+                            Toast.makeText(context, "مخاطب ذخیره شد", Toast.LENGTH_SHORT).show()
+                            newEntry()
+                        }
+                    }
+                ) {
+                    Text("✓", style = MaterialTheme.typography.headlineMedium)
+                }
+            }
+        },
+        floatingActionButtonPosition = FabPosition.End,
         bottomBar = {
             NavigationBar(containerColor = Color.White, tonalElevation = 8.dp) {
                 listOf(
@@ -418,18 +486,14 @@ private fun CrmHome(initialRecordId: Long) {
                         when (page) {
                             "list" -> "شبکه ارتباطات کاری"
                             "messages" -> "مرکز پیامک"
-                            else -> "ثبت فوری اطلاعات"
+                            else -> "ثبت مخاطب"
                         },
                         color = Color.White, style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold
                     )
                 }
                 Spacer(Modifier.weight(1f))
-                if (page == "capture") {
-                    TextButton(onClick = { newEntry() }) {
-                        Text("+ جدید", color = Color.White)
-                    }
-                } else {
+                if (page != "capture") {
                     Text("${allEntries.size} مخاطب", color = Color(0xFFD2EEE7),
                         style = MaterialTheme.typography.labelLarge)
                 }
@@ -441,9 +505,16 @@ private fun CrmHome(initialRecordId: Long) {
                 Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Text("بدون دکمه ذخیره؛ هر تغییر همان لحظه ثبت می‌شود.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.secondary)
+                OutlinedTextField(
+                    value = personName,
+                    onValueChange = {
+                        personName = it
+                        save(newName = it)
+                    },
+                    label = { Text("نام شخص") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
                 OutlinedTextField(
                     value = phone,
                     onValueChange = {
@@ -455,15 +526,20 @@ private fun CrmHome(initialRecordId: Long) {
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
+                Text(
+                    "ذخیره خودکار فعاله؛ تیک برای ثبت و شروع مخاطب بعدی است.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary
+                )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         onClick = { callNumber(phone) },
-                        enabled = phone.isNotBlank(),
+                        enabled = personName.isNotBlank() && phone.isNotBlank(),
                         modifier = Modifier.weight(1f)
                     ) { Text("☎ تماس") }
                     OutlinedButton(
                         onClick = { goToMessages() },
-                        enabled = phone.isNotBlank(),
+                        enabled = personName.isNotBlank() && phone.isNotBlank(),
                         modifier = Modifier.weight(1f)
                     ) { Text("✉ پیامک") }
                 }
@@ -494,7 +570,13 @@ private fun CrmHome(initialRecordId: Long) {
                             else "هنوز موقعیت ثبت نشده؛ GPS یا لمس روی نقشه",
                             style = MaterialTheme.typography.bodySmall
                         )
-                        Button(onClick = { openMap(ensureRecord()) }) {
+                        Button(
+                            onClick = {
+                                val id = ensureRecord()
+                                if (id > 0L) openMap(id)
+                            },
+                            enabled = personName.isNotBlank() && phone.isNotBlank()
+                        ) {
                             Text("⌖ ثبت روی نقشه یا GPS")
                         }
                     }
@@ -506,11 +588,15 @@ private fun CrmHome(initialRecordId: Long) {
                             if (isRecording) stopRecording()
                             else permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                         },
+                        enabled = isRecording || (personName.isNotBlank() && phone.isNotBlank()),
                         colors = if (isRecording) ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.error
                         ) else ButtonDefaults.buttonColors()
                     ) { Text(if (isRecording) "■ پایان ضبط" else "● ضبط صوت") }
-                    OutlinedButton(onClick = { takePhoto() }) { Text("📷 عکس فوری") }
+                    OutlinedButton(
+                        onClick = { takePhoto() },
+                        enabled = personName.isNotBlank() && phone.isNotBlank()
+                    ) { Text("📷 عکس فوری") }
                 }
 
                 if (files.isNotEmpty()) {
@@ -642,8 +728,10 @@ private fun CrmHome(initialRecordId: Long) {
                     Column(Modifier.fillMaxWidth().padding(16.dp)) {
                         Text("مخاطب", style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.secondary)
-                        Text(phone.ifBlank { "شماره ثبت نشده" },
+                        Text(personName.ifBlank { "مخاطب" },
                             style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        Text(phone.ifBlank { "شماره ثبت نشده" },
+                            style = MaterialTheme.typography.bodyLarge)
                         val company = allEntries.find { it.id == recordId }?.company.orEmpty()
                         if (company.isNotBlank()) Text(company,
                             color = MaterialTheme.colorScheme.primary)
@@ -736,7 +824,7 @@ private fun CrmHome(initialRecordId: Long) {
             }
             val filtered = allEntries.filter { entry ->
                 (filterTag == "همه" || filterTag in entry.tags) &&
-                    (search.isBlank() || listOf(entry.phone, entry.note, entry.company, entry.tags.joinToString())
+                    (search.isBlank() || listOf(entry.name, entry.phone, entry.note, entry.company, entry.tags.joinToString())
                         .any { it.contains(search, ignoreCase = true) } ||
                         db.notes(entry.id).any { it.text.contains(search, ignoreCase = true) })
             }
@@ -757,6 +845,11 @@ private fun CrmHome(initialRecordId: Long) {
                                 Modifier.padding(14.dp),
                                 verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
+                                if (entry.name.isNotBlank()) Text(
+                                    entry.name,
+                                    fontWeight = FontWeight.Bold,
+                                    style = MaterialTheme.typography.titleMedium
+                                )
                                 Text(entry.phone.ifBlank { "بدون شماره" }, fontWeight = FontWeight.SemiBold)
                                 if (entry.note.isNotBlank()) Text(
                                     entry.note,
