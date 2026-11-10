@@ -56,7 +56,7 @@ class CrmCallScreeningService : CallScreeningService() {
             this, entry.id.toInt(), open,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        val title = entry.company.ifBlank { entry.phone }
+        val title = entry.name.ifBlank { entry.company.ifBlank { entry.phone } }
         val summary = entry.note.ifBlank { "پرونده کاری در پویارا ثبت شده است." }
         val info = "شماره: ${entry.phone}\n${summary.take(500)}"
         val notification = NotificationCompat.Builder(this, channelId)
