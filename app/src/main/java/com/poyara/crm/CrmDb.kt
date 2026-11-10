@@ -7,6 +7,7 @@ import android.database.sqlite.SQLiteOpenHelper
 
 data class ContactEntry(
     val id: Long,
+    val name: String,
     val phone: String,
     val note: String,
     val company: String,
@@ -36,11 +37,12 @@ data class AttachmentEntry(
  * Local-first storage: no Contacts Provider access and no network dependency.
  * A text edit writes immediately; image/voice files remain in private app storage.
  */
-class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null, 4) {
+class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null, 5) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             """CREATE TABLE entries (
                id INTEGER PRIMARY KEY AUTOINCREMENT,
+               name TEXT NOT NULL DEFAULT '',
                phone TEXT NOT NULL DEFAULT '',
                note TEXT NOT NULL DEFAULT '',
                company TEXT NOT NULL DEFAULT '',
@@ -84,6 +86,7 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
         if (oldVersion < 2) createNotesTable(db)
         if (oldVersion < 3) createCommunicationsTables(db)
         if (oldVersion < 4) addLocationColumns(db)
+        if (oldVersion < 5) addNameColumn(db)
     }
 
     fun saveNote(noteId: Long, entryId: Long, text: String): Long {
@@ -212,6 +215,10 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
         return result
     }
 
+    private fun addNameColumn(db: SQLiteDatabase) {
+        db.execSQL("ALTER TABLE entries ADD COLUMN name TEXT NOT NULL DEFAULT ''")
+    }
+
     private fun addLocationColumns(db: SQLiteDatabase) {
         db.execSQL("ALTER TABLE entries ADD COLUMN latitude REAL")
         db.execSQL("ALTER TABLE entries ADD COLUMN longitude REAL")
@@ -249,10 +256,11 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
         }
     }
 
-    fun save(id: Long, phone: String, note: String, tags: Set<String>): Long {
+    fun save(id: Long, name: String, phone: String, note: String, tags: Set<String>): Long {
         val now = System.currentTimeMillis()
         val company = extractCompany(note)
         val values = ContentValues().apply {
+            put("name", name.trim())
             put("phone", phone.trim())
             put("note", note)
             put("company", company)
@@ -306,6 +314,7 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
                     val encoded = cursor.getString(cursor.getColumnIndexOrThrow("tags"))
                     result += ContactEntry(
                         cursor.getLong(cursor.getColumnIndexOrThrow("id")),
+                        cursor.getString(cursor.getColumnIndexOrThrow("name")),
                         cursor.getString(cursor.getColumnIndexOrThrow("phone")),
                         cursor.getString(cursor.getColumnIndexOrThrow("note")),
                         cursor.getString(cursor.getColumnIndexOrThrow("company")),
