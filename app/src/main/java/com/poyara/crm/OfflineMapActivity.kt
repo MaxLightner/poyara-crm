@@ -307,8 +307,8 @@ class OfflineMapActivity : ComponentActivity() {
 
     private fun showContact(group: List<ContactEntry>) {
         val first = group.first()
-        val title = first.company.ifBlank {
-            first.note.lineSequence().firstOrNull()?.take(32) ?: first.phone
+        val title = first.name.ifBlank {
+            first.company.ifBlank { first.note.lineSequence().firstOrNull()?.take(32) ?: first.phone }
         }
         val phones = group.map { it.phone }.filter { it.isNotBlank() }.distinct()
         android.app.AlertDialog.Builder(this)
@@ -444,7 +444,7 @@ class OfflineMapActivity : ComponentActivity() {
             return
         }
         val labels = groups.map { entry ->
-            entry.company.ifBlank { entry.note.take(35).ifBlank { entry.phone } }
+            entry.name.ifBlank { entry.company.ifBlank { entry.note.take(35).ifBlank { entry.phone } } }
         }.toTypedArray()
         android.app.AlertDialog.Builder(this)
             .setTitle("${groups.size} مشتری در شعاع ${radiusMeters} متر")
