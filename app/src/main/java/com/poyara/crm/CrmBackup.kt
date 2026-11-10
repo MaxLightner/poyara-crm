@@ -21,6 +21,7 @@ class CrmBackup(private val context: Context, private val db: CrmDb) {
         val media = mutableListOf<Pair<String, File>>()
         entries.forEach { entry ->
             val obj = JSONObject()
+                .put("name", entry.name)
                 .put("phone", entry.phone)
                 .put("note", entry.note)
                 .put("tags", JSONArray(entry.tags.toList()))
@@ -110,13 +111,14 @@ class CrmBackup(private val context: Context, private val db: CrmDb) {
             var imported = 0
             for (i in 0 until contacts.length()) {
                 val item = contacts.getJSONObject(i)
+                val name = item.optString("name")
                 val phone = item.optString("phone")
                 val note = item.optString("note")
                 val key = phone.trim() to note
                 if ((phone.isNotBlank() || note.isNotBlank()) && key in known) continue
                 val tagsJson = item.optJSONArray("tags") ?: JSONArray()
                 val tags = (0 until tagsJson.length()).map { tagsJson.getString(it) }.toSet()
-                val id = db.save(0L, phone, note, tags)
+                val id = db.save(0L, name, phone, note, tags)
                 known.add(key)
                 if (item.has("latitude") && item.has("longitude")) {
                     val lat = item.optDouble("latitude", Double.NaN)
