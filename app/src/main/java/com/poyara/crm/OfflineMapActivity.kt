@@ -1,6 +1,7 @@
 package com.poyara.crm
 
 import android.Manifest
+import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -51,6 +52,10 @@ class OfflineMapActivity : ComponentActivity() {
     private var cache: TileCache? = null
     private val markers = mutableListOf<Marker>()
     private var selectingEntryId = 0L
+    private var allowPickLocation = false
+    private var mapFallback: TextView? = null
+    private var mapReady = false
+    private var userMarker: Marker? = null
     private var filterTag = "همه"
     private var radiusMeters = 2000
     private var nextLocationAction = "nearby"
@@ -107,7 +112,9 @@ class OfflineMapActivity : ComponentActivity() {
         AndroidGraphicFactory.createInstance(application)
         db = CrmDb(applicationContext)
         selectingEntryId = intent.getLongExtra("entry_id", 0L)
+        allowPickLocation = intent.getBooleanExtra("allow_pick_location", false)
         mapView = MapView(this).apply {
+            setBackgroundColor(Color.rgb(235, 241, 239))
             setBuiltInZoomControls(true)
             setZoomLevel(15.toByte())
         }
@@ -118,10 +125,12 @@ class OfflineMapActivity : ComponentActivity() {
             } else LatLong(36.30, 59.60)
         )
         createScreen()
+        installBundledMap()
         loadBasemap()
         showPins()
         updateStatus()
         setupTapToSelect()
+        locateWithPermission()
     }
 
     private fun createScreen() {
@@ -152,6 +161,17 @@ class OfflineMapActivity : ComponentActivity() {
         topButtons.addView(filterButton)
         top.addView(topButtons)
         root.addView(top, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
+        mapFallback = TextView(this).apply {
+            text = "نقشه آفلاین آماده نیست\\nدر این نسخه، نقشه خراسان رضوی باید همراه برنامه نصب شود."
+            textSize = 15f
+            gravity = Gravity.CENTER
+            setTextColor(Color.rgb(18, 61, 67))
+            setPadding(dp(20), dp(16), dp(20), dp(16))
+            setBackgroundColor(Color.argb(225, 255, 255, 255))
+        }
+        root.addView(mapFallback, FrameLayout.LayoutParams(-1, -2, Gravity.CENTER).apply {
+            leftMargin = dp(24); rightMargin = dp(24)
+        })
 
         val bottom = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -171,7 +191,7 @@ class OfflineMapActivity : ComponentActivity() {
             nextLocationAction = "center"
             locateWithPermission()
         })
-        if (selectingEntryId > 0) {
+        if (selectingEntryId > 0 || allowPickLocation) {
             row.addView(makeButton("ثبت GPS") {
                 nextLocationAction = "save"
                 locateWithPermission()
@@ -215,13 +235,14 @@ class OfflineMapActivity : ComponentActivity() {
 
     private fun updateStatus() {
         val count = visibleContacts().size
-        status.text = if (selectingEntryId > 0) {
-            "برای ثبت نشانی این مشتری، روی نقشه لمس کن یا «ثبت GPS» بزن."
-        } else if (mapFile.isFile) {
-            "$count مخاطب دارای موقعیت · نقشه کاملاً آفلاین"
+        status.text = if (selectingEntryId > 0 || allowPickLocation) {
+            "برای ثبت موقعیت، روی نقشه لمس کن یا «ثبت GPS» بزن."
+        } else if (mapReady) {
+            "$count مخاطب دارای موقعیت · نقشه آفلاین خراسان رضوی آماده است"
         } else {
-            "$count مخاطب دارای موقعیت · برای خیابان‌ها فایل نقشه منطقه را وارد کن."
+            "$count مخاطب دارای موقعیت · نقشه آفلاین بارگذاری نشد"
         }
+        mapFallback?.visibility = if (mapReady) View.GONE else View.VISIBLE
     }
 
     private fun visibleContacts(): List<ContactEntry> = db.all().filter {
@@ -237,12 +258,26 @@ class OfflineMapActivity : ComponentActivity() {
         updateStatus()
     }
 
+    private fun installBundledMap() {
+        if (mapFile.isFile) return
+        runCatching {
+            mapFile.parentFile?.mkdirs()
+            assets.open("maps/razavi.map").use { input ->
+                mapFile.outputStream().use { output -> input.copyTo(output) }
+            }
+            require(mapFile.length() > 0L)
+        }.onFailure {
+            mapReady = false
+        }
+    }
+
     private fun loadBasemap() {
         renderer?.let { mapView.layerManager.layers.remove(it) }
         renderer = null
         mapData?.close()
         mapData = null
-        if (!mapFile.isFile) return
+        mapReady = false
+        if (!mapFile.isFile) { mapFallback?.visibility = View.VISIBLE; return }
         try {
             val data = MapFile(mapFile)
             val tileCache = AndroidUtil.createTileCache(
@@ -263,8 +298,12 @@ class OfflineMapActivity : ComponentActivity() {
                 data.startZoomLevel()?.let { mapView.setZoomLevel(it) }
             }
             mapView.layerManager.redrawLayers()
+            mapReady = true
+            mapFallback?.visibility = View.GONE
         } catch (e: Exception) {
-            status.text = "این فایل نقشه قابل نمایش نیست."
+            mapReady = false
+            mapFallback?.visibility = View.VISIBLE
+            status.text = "فایل نقشه قابل نمایش نیست؛ نسخه نقشه را دوباره نصب کن."
         }
     }
 
@@ -337,7 +376,7 @@ class OfflineMapActivity : ComponentActivity() {
                 }
                 MotionEvent.ACTION_UP -> {
                     val distance = hypot(event.x - downX, event.y - downY)
-                    if (selectingEntryId > 0L && distance < dp(12)) {
+                    if ((selectingEntryId > 0L || allowPickLocation) && distance < dp(12)) {
                         val point = mapView.mapViewProjection.fromPixels(
                             event.x.toDouble(), event.y.toDouble()
                         )
@@ -353,13 +392,15 @@ class OfflineMapActivity : ComponentActivity() {
 
     private fun savePoint(lat: Double, lon: Double, source: String) {
         val id = selectingEntryId
-        if (id <= 0L) return
-        db.setLocation(id, lat, lon, source)
-        selectingEntryId = 0L
-        mapView.setCenter(LatLong(lat, lon))
-        showPins()
-        updateStatus()
-        Toast.makeText(this, "موقعیت مشتری ذخیره شد", Toast.LENGTH_LONG).show()
+        if (id > 0L) db.setLocation(id, lat, lon, source)
+        if (id <= 0L && !allowPickLocation) return
+        setResult(Activity.RESULT_OK, Intent().apply {
+            putExtra("latitude", lat)
+            putExtra("longitude", lon)
+            putExtra("location_source", source)
+        })
+        Toast.makeText(this, if (id > 0L) "موقعیت مشتری ذخیره شد" else "موقعیت برای مخاطب جدید انتخاب شد", Toast.LENGTH_SHORT).show()
+        finish()
     }
 
     private fun locateWithPermission() {
@@ -415,6 +456,7 @@ class OfflineMapActivity : ComponentActivity() {
         }
         mapView.setCenter(LatLong(location.latitude, location.longitude))
         mapView.setZoomLevel(15.toByte())
+        showUserLocation(location)
         when (nextLocationAction) {
             "save" -> {
                 if (selectingEntryId > 0L) savePoint(location.latitude, location.longitude, "gps")
@@ -422,6 +464,22 @@ class OfflineMapActivity : ComponentActivity() {
             "nearby" -> showNearby(location)
         }
         updateStatus()
+    }
+
+    private fun showUserLocation(location: Location) {
+        userMarker?.let { mapView.layerManager.layers.remove(it) }
+        val drawable = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(Color.rgb(35, 112, 245))
+            setStroke(dp(4), Color.WHITE)
+            setSize(dp(20), dp(20))
+        }
+        userMarker = Marker(
+            LatLong(location.latitude, location.longitude),
+            AndroidGraphicFactory.convertToBitmap(drawable), dp(10), dp(10)
+        )
+        mapView.layerManager.layers.add(userMarker)
+        mapView.layerManager.redrawLayers()
     }
 
     private fun showNearby(location: Location) {
@@ -457,6 +515,7 @@ class OfflineMapActivity : ComponentActivity() {
 
     override fun onDestroy() {
         markers.clear()
+        userMarker = null
         mapView.destroyAll()
         mapData?.close()
         db.close()
