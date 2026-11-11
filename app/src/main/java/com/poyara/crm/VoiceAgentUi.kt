@@ -1,6 +1,12 @@
 package com.poyara.crm
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -54,6 +60,14 @@ internal fun VoiceAgentPanel(
     val context = LocalContext.current
     val client = remember { VoiceAgentClient(context.applicationContext) }
     val scope = rememberCoroutineScope()
+    val notificationPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (!granted) Toast.makeText(
+            context, "اعلان یادآوری برای اندروید غیرفعال است؛ از تنظیمات گوشی فعالش کن",
+            Toast.LENGTH_LONG
+        ).show()
+    }
     var showSettings by remember { mutableStateOf(false) }
     var configured by remember { mutableStateOf(client.isConfigured) }
     var busyPath by remember { mutableStateOf<String?>(null) }
@@ -260,6 +274,11 @@ internal fun VoiceAgentPanel(
                                 }
                                 review = null
                                 onImported()
+                                if (report.remindersCreated > 0 && Build.VERSION.SDK_INT >= 33 &&
+                                    ContextCompat.checkSelfPermission(context,
+                                        Manifest.permission.POST_NOTIFICATIONS
+                                    ) != PackageManager.PERMISSION_GRANTED
+                                ) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
                                 Toast.makeText(
                                     context,
                                     "ثبت شد: " + report.contactsCreated + " نفر جدید، " +
