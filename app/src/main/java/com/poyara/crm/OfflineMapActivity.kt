@@ -259,13 +259,20 @@ class OfflineMapActivity : ComponentActivity() {
     }
 
     private fun installBundledMap() {
-        if (mapFile.isFile) return
+        if (mapFile.isFile) {
+            val existingIsValid = runCatching {
+                MapFile(mapFile).use { true }
+            }.getOrDefault(false)
+            if (existingIsValid) return
+            mapFile.delete()
+        }
         runCatching {
             mapFile.parentFile?.mkdirs()
             assets.open("maps/razavi.map").use { input ->
                 mapFile.outputStream().use { output -> input.copyTo(output) }
             }
             require(mapFile.length() > 0L)
+            MapFile(mapFile).use { }
         }.onFailure {
             mapReady = false
         }
