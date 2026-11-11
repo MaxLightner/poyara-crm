@@ -29,8 +29,14 @@ object CardOcr {
                 model.outputStream().use { output -> input.copyTo(output) }
             }
         }
-        val bitmap = BitmapFactory.decodeFile(image.absolutePath)
-            ?: error("تصویر کارت قابل خواندن نیست")
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(image.absolutePath, bounds)
+        val longestSide = maxOf(bounds.outWidth, bounds.outHeight)
+        val sample = if (longestSide > 2400) (longestSide / 2400).coerceAtLeast(1) else 1
+        val bitmap = BitmapFactory.decodeFile(
+            image.absolutePath,
+            BitmapFactory.Options().apply { inSampleSize = sample }
+        ) ?: error("تصویر کارت قابل خواندن نیست")
         val persianText = runCatching {
             val api = TessBaseAPI()
             try {
