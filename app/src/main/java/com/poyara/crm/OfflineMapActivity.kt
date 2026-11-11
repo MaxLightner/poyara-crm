@@ -84,7 +84,16 @@ class OfflineMapActivity : ComponentActivity() {
 
     private val locationSettings = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
-    ) { checkGpsAndLocate() }
+    ) {
+        val manager = getSystemService(LocationManager::class.java)
+        val enabled = manager.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
+            manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+        if (enabled) requestLocationFix()
+        else {
+            status.text = "موقعیت گوشی همچنان خاموش است"
+            message("می‌توانی بعداً موقعیت را فعال کنی یا روی نقشه علامت بزنی")
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
