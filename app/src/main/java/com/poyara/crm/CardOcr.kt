@@ -90,7 +90,12 @@ object CardOcr {
                     .any { key -> it.contains(key, ignoreCase = true) }
         }.orEmpty()
         val person = personLine.replace(
-            Regex("^(مدیرعامل|مدیر|مسئول|کارشناس|جناب آقای|آقای|سرکار خانم|خانم)\\s*[:：-]?\\s*"),
+            Regex("^(مدیرعامل|مدیر|مسئول|کارشناس|جناب آقای|آقای|سرکار خانم|خانم|name|manager|mr\\.|ms\\.)\\s*[:：-]?\\s*",
+                RegexOption.IGNORE_CASE),
+            ""
+        ).trim()
+        val cleanCompany = companyLine.replace(
+            Regex("^(company|brand|مجموعه|شرکت)\\s*[:：-]?\\s*", RegexOption.IGNORE_CASE),
             ""
         ).trim()
         val fallbackPerson = if (person.isBlank()) {
@@ -99,7 +104,7 @@ object CardOcr {
         } else person
         return ScannedBusinessCard(
             personName = fallbackPerson.take(70),
-            company = companyLine.take(90),
+            company = cleanCompany.take(90),
             phone = phone,
             address = addressLine.removePrefix("آدرس").removePrefix("نشانی").trim(' ', ':', '：', '-').take(180),
             email = email,
