@@ -19,6 +19,7 @@ class CrmBackup(private val context: Context, private val db: CrmDb) {
         val manifest = JSONObject().put("format", "poyara-crm-v1")
         val contacts = JSONArray()
         val byId = entries.associateBy { it.id }
+        val remindersByEntry = db.allReminders(includeDone = true).groupBy { it.entryId }
         val media = mutableListOf<Pair<String, File>>()
         entries.forEach { entry ->
             val root = entry.groupId?.let { byId[it] }
@@ -39,6 +40,17 @@ class CrmBackup(private val context: Context, private val db: CrmDb) {
                 notes.put(JSONObject().put("text", item.text))
             }
             obj.put("notes", notes)
+            val reminders = JSONArray()
+            remindersByEntry[entry.id].orEmpty().forEach { reminder ->
+                reminders.put(
+                    JSONObject()
+                        .put("title", reminder.title)
+                        .put("dueAt", reminder.dueAt)
+                        .put("daysBefore", reminder.remindDaysBefore)
+                        .put("done", reminder.done)
+                )
+            }
+            obj.put("reminders", reminders)
             val files = JSONArray()
             db.attachments(entry.id).forEach { item ->
                 val source = File(item.filePath)
@@ -113,6 +125,7 @@ class CrmBackup(private val context: Context, private val db: CrmDb) {
             val existing = db.all()
             val known = existing.map { it.phone.trim() to it.note }.toMutableSet()
             val pendingGroups = mutableListOf<Pair<Long, String>>()
+            val pendingReminders = mutableListOf<Pair<Long, JSONObject>>()
             val folder = File(context.filesDir, "attachments").apply { mkdirs() }
             var imported = 0
             for (i in 0 until contacts.length()) {
@@ -140,6 +153,10 @@ class CrmBackup(private val context: Context, private val db: CrmDb) {
                 for (n in 0 until notes.length()) {
                     db.saveNote(0L, id, notes.getJSONObject(n).optString("text"))
                 }
+                val reminders = item.optJSONArray("reminders") ?: JSONArray()
+                for (r in 0 until reminders.length()) {
+                    pendingReminders += id to reminders.getJSONObject(r)
+                }
                 val media = item.optJSONArray("attachments") ?: JSONArray()
                 for (m in 0 until media.length()) {
                     val a = media.getJSONObject(m)
@@ -164,6 +181,24 @@ class CrmBackup(private val context: Context, private val db: CrmDb) {
             pendingGroups.forEach { (childId, rootPhone) ->
                 val rootId = idsByPhone[rootPhone]
                 if (rootId != null && rootId != childId) db.setGroup(childId, rootId)
+            }
+            pendingReminders.forEach { (entryId, item) ->
+                val dueAt = item.optLong("dueAt", 0L)
+                if (dueAt > System.currentTimeMillis()) {
+                    val reminderId = db.addReminder(
+                        entryId,
+                        item.optString("title"),
+                        dueAt,
+                        item.optInt("daysBefore", 1)
+                    )
+                    if (item.optBoolean("done", false)) {
+                        db.completeReminder(reminderId, true)
+                    } else {
+                        ReminderScheduler.createChannel(context)
+                        db.allReminders(includeDone = true).firstOrNull { it.id == reminderId }
+                            ?.let { ReminderScheduler.schedule(context, it) }
+                    }
+                }
             }
             return imported
         } finally {
