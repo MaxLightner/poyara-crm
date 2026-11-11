@@ -6,3 +6,11 @@ build/
 app/build/
 captures/
 *.apk
+
+# Voice agent secrets and local environment
+.env
+.env.*
+!.env.example
+server/.venv/
+__pycache__/
+*.pyc
