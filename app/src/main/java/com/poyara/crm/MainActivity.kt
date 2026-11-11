@@ -397,6 +397,55 @@ private fun CrmHome(initialRecordId: Long) {
         pendingPhoto = null
     }
 
+    val scanCameraLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.TakePicture()
+    ) { captured ->
+        val file = pendingScanPhoto
+        if (captured && file != null) {
+            scanBusy = true
+            Thread {
+                val result = runCatching { CardOcr.recognize(context.applicationContext, file) }
+                Handler(Looper.getMainLooper()).post {
+                    scanBusy = false
+                    result.onSuccess { card ->
+                        scanPersonName = card.personName
+                        scanCompany = card.company
+                        scanPhone = card.phone
+                        scanAddress = card.address
+                        scanEmail = card.email
+                        scanWebsite = card.website
+                        scanRawText = card.rawText
+                        showScanDialog = true
+                    }.onFailure { error ->
+                        file.delete()
+                        pendingScanPhoto = null
+                        Toast.makeText(
+                            context,
+                            "متن کارت تشخیص داده نشد: ${error.localizedMessage}",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            }.start()
+        } else {
+            file?.delete()
+            pendingScanPhoto = null
+        }
+    }
+
+    fun startCardScan() {
+        val folder = File(context.filesDir, "attachments").apply { mkdirs() }
+        val file = File(folder, "business_card_${System.currentTimeMillis()}.jpg")
+        pendingScanPhoto = file
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
+        runCatching { scanCameraLauncher.launch(uri) }
+            .onFailure {
+                file.delete()
+                pendingScanPhoto = null
+                Toast.makeText(context, "دوربین در دسترس نیست", Toast.LENGTH_SHORT).show()
+            }
+    }
+
     fun takePhoto() {
         val folder = File(context.filesDir, "attachments").apply { mkdirs() }
         val owner = if (recordId > 0L) recordId.toString() else "draft"
