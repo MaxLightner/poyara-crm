@@ -35,7 +35,6 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
-import java.util.concurrent.TimeUnit
 
 @Composable
 fun ReminderComposer(
@@ -185,7 +184,7 @@ fun WeeklyAgenda(
             set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0)
             set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
             val day = get(Calendar.DAY_OF_WEEK)
-            val daysFromSaturday = (day + 1) % 7
+            val daysFromSaturday = day % 7
             add(Calendar.DAY_OF_MONTH, -daysFromSaturday)
         }
         val end = (start.clone() as Calendar).apply { add(Calendar.DAY_OF_MONTH, 7) }
