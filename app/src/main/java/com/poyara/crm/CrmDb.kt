@@ -15,7 +15,8 @@ data class ContactEntry(
     val updatedAt: Long,
     val latitude: Double? = null,
     val longitude: Double? = null,
-    val locationSource: String? = null
+    val locationSource: String? = null,
+    val groupId: Long? = null
 )
 
 data class ContactNote(
@@ -33,11 +34,20 @@ data class AttachmentEntry(
     val createdAt: Long
 )
 
+data class WorkReminder(
+    val id: Long,
+    val entryId: Long,
+    val title: String,
+    val dueAt: Long,
+    val remindDaysBefore: Int,
+    val done: Boolean
+)
+
 /**
  * Local-first storage: no Contacts Provider access and no network dependency.
  * A text edit writes immediately; image/voice files remain in private app storage.
  */
-class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null, 5) {
+class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null, 6) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             """CREATE TABLE entries (
@@ -51,7 +61,8 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
                updated_at INTEGER NOT NULL,
                latitude REAL,
                longitude REAL,
-               location_source TEXT
+               location_source TEXT,
+               group_id INTEGER
             )"""
         )
         db.execSQL(
@@ -67,6 +78,7 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
         db.execSQL("CREATE INDEX attachments_record ON attachments(record_id)")
         createNotesTable(db)
         createCommunicationsTables(db)
+        createRemindersTable(db)
     }
 
     private fun createNotesTable(db: SQLiteDatabase) {
@@ -87,7 +99,78 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
         if (oldVersion < 3) createCommunicationsTables(db)
         if (oldVersion < 4) addLocationColumns(db)
         if (oldVersion < 5) addNameColumn(db)
+        if (oldVersion < 6) {
+            db.execSQL("ALTER TABLE entries ADD COLUMN group_id INTEGER")
+            createRemindersTable(db)
+        }
     }
+
+    private fun createRemindersTable(db: SQLiteDatabase) {
+        db.execSQL("""CREATE TABLE IF NOT EXISTS reminders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entry_id INTEGER NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            due_at INTEGER NOT NULL,
+            remind_days_before INTEGER NOT NULL DEFAULT 1,
+            done INTEGER NOT NULL DEFAULT 0
+        )""")
+        db.execSQL("CREATE INDEX IF NOT EXISTS reminders_due ON reminders(due_at)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS reminders_entry ON reminders(entry_id)")
+    }
+
+    fun addReminder(entryId: Long, title: String, dueAt: Long, remindDaysBefore: Int): Long {
+        require(entryId > 0 && dueAt > System.currentTimeMillis())
+        val values = ContentValues().apply {
+            put("entry_id", entryId)
+            put("title", title.trim())
+            put("due_at", dueAt)
+            put("remind_days_before", remindDaysBefore.coerceIn(0, 7))
+            put("done", 0)
+        }
+        return writableDatabase.insertOrThrow("reminders", null, values)
+    }
+
+    fun remindersBetween(startAt: Long, endAt: Long): List<WorkReminder> {
+        val result = mutableListOf<WorkReminder>()
+        readableDatabase.query(
+            "reminders", null, "due_at>=? AND due_at<?",
+            arrayOf(startAt.toString(), endAt.toString()), null, null, "due_at ASC"
+        ).use { cursor ->
+            while (cursor.moveToNext()) result += reminderFrom(cursor)
+        }
+        return result
+    }
+
+    fun allReminders(includeDone: Boolean = false): List<WorkReminder> {
+        val result = mutableListOf<WorkReminder>()
+        readableDatabase.query(
+            "reminders", null, if (includeDone) null else "done=0",
+            null, null, null, "due_at ASC"
+        ).use { cursor ->
+            while (cursor.moveToNext()) result += reminderFrom(cursor)
+        }
+        return result
+    }
+
+    fun deleteReminder(id: Long) {
+        writableDatabase.delete("reminders", "id=?", arrayOf(id.toString()))
+    }
+
+    fun completeReminder(id: Long, done: Boolean = true) {
+        writableDatabase.update(
+            "reminders", ContentValues().apply { put("done", if (done) 1 else 0) },
+            "id=?", arrayOf(id.toString())
+        )
+    }
+
+    private fun reminderFrom(cursor: android.database.Cursor) = WorkReminder(
+        cursor.getLong(cursor.getColumnIndexOrThrow("id")),
+        cursor.getLong(cursor.getColumnIndexOrThrow("entry_id")),
+        cursor.getString(cursor.getColumnIndexOrThrow("title")),
+        cursor.getLong(cursor.getColumnIndexOrThrow("due_at")),
+        cursor.getInt(cursor.getColumnIndexOrThrow("remind_days_before")),
+        cursor.getInt(cursor.getColumnIndexOrThrow("done")) == 1
+    )
 
     fun saveNote(noteId: Long, entryId: Long, text: String): Long {
         require(entryId > 0)
@@ -256,14 +339,23 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
         }
     }
 
-    fun save(id: Long, name: String, phone: String, note: String, tags: Set<String>): Long {
+    fun save(
+        id: Long,
+        name: String,
+        phone: String,
+        note: String,
+        tags: Set<String>,
+        company: String = "",
+        groupId: Long? = null
+    ): Long {
         val now = System.currentTimeMillis()
-        val company = extractCompany(note)
+        val resolvedCompany = company.trim().ifBlank { extractCompany(note) }
         val values = ContentValues().apply {
             put("name", name.trim())
             put("phone", phone.trim())
             put("note", note)
-            put("company", company)
+            put("company", resolvedCompany)
+            if (groupId != null && groupId > 0L) put("group_id", groupId) else putNull("group_id")
             put("tags", tags.sorted().joinToString("|"))
             put("updated_at", now)
         }
@@ -328,6 +420,9 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
                         },
                         cursor.getColumnIndexOrThrow("location_source").let { idx ->
                             if (cursor.isNull(idx)) null else cursor.getString(idx)
+                        },
+                        cursor.getColumnIndexOrThrow("group_id").let { idx ->
+                            if (cursor.isNull(idx)) null else cursor.getLong(idx)
                         }
                     )
                 }
