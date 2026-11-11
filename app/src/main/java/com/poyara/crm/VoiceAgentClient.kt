@@ -130,15 +130,17 @@ internal class VoiceAgentClient(context: Context) {
         return Base64.encodeToString(data, Base64.NO_WRAP)
     }
 
-    private fun readToken(): String? = runCatching {
-        val encoded = prefs.getString("token", null) ?: return null
-        val bytes = Base64.decode(encoded, Base64.NO_WRAP)
-        if (bytes.size <= 12) return null
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(
-            Cipher.DECRYPT_MODE, key(),
-            GCMParameterSpec(128, bytes.copyOfRange(0, 12))
-        )
-        String(cipher.doFinal(bytes.copyOfRange(12, bytes.size)), Charsets.UTF_8)
-    }.getOrNull()
+    private fun readToken(): String? {
+        return runCatching {
+            val encoded = prefs.getString("token", null) ?: return@runCatching null
+            val bytes = Base64.decode(encoded, Base64.NO_WRAP)
+            if (bytes.size <= 12) return@runCatching null
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(
+                Cipher.DECRYPT_MODE, key(),
+                GCMParameterSpec(128, bytes.copyOfRange(0, 12))
+            )
+            String(cipher.doFinal(bytes.copyOfRange(12, bytes.size)), Charsets.UTF_8)
+        }.getOrNull()
+    }
 }
