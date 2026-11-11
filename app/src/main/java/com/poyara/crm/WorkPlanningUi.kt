@@ -72,6 +72,7 @@ fun ReminderComposer(
                         context,
                         { _, year, month, day ->
                             val selected = Calendar.getInstance().apply {
+                                set(Calendar.DAY_OF_MONTH, 1)
                                 set(Calendar.YEAR, year)
                                 set(Calendar.MONTH, month)
                                 set(Calendar.DAY_OF_MONTH, day)
