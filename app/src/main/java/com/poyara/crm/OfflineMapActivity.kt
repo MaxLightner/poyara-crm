@@ -259,21 +259,28 @@ class OfflineMapActivity : ComponentActivity() {
     }
 
     private fun installBundledMap() {
-        if (mapFile.isFile) {
-            val existingIsValid = runCatching {
-                MapFile(mapFile).use { true }
-            }.getOrDefault(false)
-            if (existingIsValid) return
-            mapFile.delete()
-        }
+        val preferences = getSharedPreferences("map_assets", MODE_PRIVATE)
+        val installedVersion = preferences.getInt("razavi_map_version", 0)
+        val existingIsValid = mapFile.isFile && runCatching {
+            MapFile(mapFile).use { true }
+        }.getOrDefault(false)
+        if (installedVersion >= 1 && existingIsValid) return
+
+        val temporary = File(mapFile.parentFile, "offline.map.new")
         runCatching {
             mapFile.parentFile?.mkdirs()
+            temporary.delete()
             assets.open("maps/razavi.map").use { input ->
-                mapFile.outputStream().use { output -> input.copyTo(output) }
+                temporary.outputStream().use { output -> input.copyTo(output) }
             }
-            require(mapFile.length() > 0L)
-            MapFile(mapFile).use { }
+            require(temporary.length() > 100_000L) { "فایل نقشه همراه برنامه ناقص است" }
+            MapFile(temporary).use { }
+            if (mapFile.exists() && !mapFile.delete()) error("فایل نقشه قبلی قابل جایگزینی نیست")
+            if (!temporary.renameTo(mapFile)) temporary.copyTo(mapFile, overwrite = true)
+            temporary.delete()
+            preferences.edit().putInt("razavi_map_version", 1).apply()
         }.onFailure {
+            temporary.delete()
             mapReady = false
         }
     }
