@@ -262,7 +262,9 @@ class OfflineMapActivity : ComponentActivity() {
         val preferences = getSharedPreferences("map_assets", MODE_PRIVATE)
         val installedVersion = preferences.getInt("razavi_map_version", 0)
         val existingIsValid = mapFile.isFile && runCatching {
-            MapFile(mapFile).use { true }
+            val candidate = MapFile(mapFile)
+            candidate.close()
+            true
         }.getOrDefault(false)
         if (installedVersion >= 1 && existingIsValid) return
 
@@ -274,7 +276,8 @@ class OfflineMapActivity : ComponentActivity() {
                 temporary.outputStream().use { output -> input.copyTo(output) }
             }
             require(temporary.length() > 100_000L) { "فایل نقشه همراه برنامه ناقص است" }
-            MapFile(temporary).use { }
+            val candidate = MapFile(temporary)
+            candidate.close()
             if (mapFile.exists() && !mapFile.delete()) error("فایل نقشه قبلی قابل جایگزینی نیست")
             if (!temporary.renameTo(mapFile)) temporary.copyTo(mapFile, overwrite = true)
             temporary.delete()
