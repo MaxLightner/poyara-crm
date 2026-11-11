@@ -18,11 +18,15 @@ class CrmBackup(private val context: Context, private val db: CrmDb) {
         val entries = db.all()
         val manifest = JSONObject().put("format", "poyara-crm-v1")
         val contacts = JSONArray()
+        val byId = entries.associateBy { it.id }
         val media = mutableListOf<Pair<String, File>>()
         entries.forEach { entry ->
+            val root = entry.groupId?.let { byId[it] }
             val obj = JSONObject()
                 .put("name", entry.name)
                 .put("phone", entry.phone)
+                .put("company", entry.company)
+                .put("groupRootPhone", root?.phone.orEmpty())
                 .put("note", entry.note)
                 .put("tags", JSONArray(entry.tags.toList()))
             if (entry.latitude != null && entry.longitude != null) {
@@ -106,7 +110,9 @@ class CrmBackup(private val context: Context, private val db: CrmDb) {
             val root = manifest ?: error("Backup manifest missing")
             require(root.optString("format") == "poyara-crm-v1") { "Unsupported backup format" }
             val contacts = root.getJSONArray("contacts")
-            val known = db.all().map { it.phone.trim() to it.note }.toMutableSet()
+            val existing = db.all()
+            val known = existing.map { it.phone.trim() to it.note }.toMutableSet()
+            val pendingGroups = mutableListOf<Pair<Long, String>>()
             val folder = File(context.filesDir, "attachments").apply { mkdirs() }
             var imported = 0
             for (i in 0 until contacts.length()) {
@@ -114,11 +120,14 @@ class CrmBackup(private val context: Context, private val db: CrmDb) {
                 val name = item.optString("name")
                 val phone = item.optString("phone")
                 val note = item.optString("note")
+                val company = item.optString("company")
+                val groupRootPhone = item.optString("groupRootPhone")
                 val key = phone.trim() to note
                 if ((phone.isNotBlank() || note.isNotBlank()) && key in known) continue
                 val tagsJson = item.optJSONArray("tags") ?: JSONArray()
                 val tags = (0 until tagsJson.length()).map { tagsJson.getString(it) }.toSet()
-                val id = db.save(0L, name, phone, note, tags)
+                val id = db.save(0L, name, phone, note, tags, company)
+                if (groupRootPhone.isNotBlank()) pendingGroups += id to groupRootPhone
                 known.add(key)
                 if (item.has("latitude") && item.has("longitude")) {
                     val lat = item.optDouble("latitude", Double.NaN)
@@ -149,6 +158,12 @@ class CrmBackup(private val context: Context, private val db: CrmDb) {
                     }
                 }
                 imported++
+            }
+            val idsByPhone = db.all().filter { it.phone.isNotBlank() }
+                .associate { it.phone.trim() to it.id }
+            pendingGroups.forEach { (childId, rootPhone) ->
+                val rootId = idsByPhone[rootPhone]
+                if (rootId != null && rootId != childId) db.setGroup(childId, rootId)
             }
             return imported
         } finally {
