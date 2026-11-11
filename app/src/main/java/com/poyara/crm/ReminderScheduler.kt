@@ -26,11 +26,16 @@ object ReminderScheduler {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val now = System.currentTimeMillis()
-        val lead = TimeUnit.DAYS.toMillis(reminder.remindDaysBefore.coerceIn(0, 7).toLong())
+        val lead = if (reminder.remindDaysBefore <= 0) {
+            TimeUnit.HOURS.toMillis(1)
+        } else {
+            TimeUnit.DAYS.toMillis(reminder.remindDaysBefore.coerceIn(1, 7).toLong())
+        }
         val requested = reminder.dueAt - lead
         val trigger = when {
             requested > now -> requested
-            reminder.dueAt > now -> reminder.dueAt
+            reminder.dueAt > now -> maxOf(now + TimeUnit.MINUTES.toMillis(1),
+                reminder.dueAt - TimeUnit.HOURS.toMillis(1))
             else -> now + TimeUnit.MINUTES.toMillis(1)
         }
         alarm.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, trigger, pending)
