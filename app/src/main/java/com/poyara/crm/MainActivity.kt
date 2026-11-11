@@ -1153,6 +1153,100 @@ private fun CrmHome(initialRecordId: Long) {
                 }
             }
         }
+        if (showScanDialog) {
+            AlertDialog(
+                onDismissRequest = {
+                    pendingScanPhoto?.delete()
+                    pendingScanPhoto = null
+                    showScanDialog = false
+                },
+                title = { Text("اطلاعات خوانده‌شده از کارت") },
+                text = {
+                    Column(
+                        Modifier.fillMaxWidth().heightIn(max = 500.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text("قبل از ثبت، موارد استخراج‌شده را بررسی و اصلاح کن.")
+                        OutlinedTextField(
+                            value = scanPersonName,
+                            onValueChange = { scanPersonName = it },
+                            label = { Text("نام شخص") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = scanCompany,
+                            onValueChange = { scanCompany = it },
+                            label = { Text("نام مجموعه / برند") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = scanPhone,
+                            onValueChange = { scanPhone = it },
+                            label = { Text("شماره تماس") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = scanAddress,
+                            onValueChange = { scanAddress = it },
+                            label = { Text("آدرس") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = scanEmail,
+                            onValueChange = { scanEmail = it },
+                            label = { Text("ایمیل") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = scanWebsite,
+                            onValueChange = { scanWebsite = it },
+                            label = { Text("وب‌سایت") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text("متن تشخیص‌داده‌شده", fontWeight = FontWeight.SemiBold)
+                        Text(scanRawText, style = MaterialTheme.typography.bodySmall)
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        personName = scanPersonName.trim()
+                        companyName = scanCompany.trim()
+                        phone = scanPhone.trim()
+                        val extracted = buildList {
+                            if (scanAddress.isNotBlank()) add("آدرس: ${scanAddress.trim()}")
+                            if (scanEmail.isNotBlank()) add("ایمیل: ${scanEmail.trim()}")
+                            if (scanWebsite.isNotBlank()) add("وب‌سایت: ${scanWebsite.trim()}")
+                            if (scanRawText.isNotBlank()) add("متن کارت: ${scanRawText.trim()}")
+                        }.joinToString("\n")
+                        note = listOf(note.trim(), extracted).filter { it.isNotBlank() }
+                            .joinToString("\n\n")
+                        val savedId = save(
+                            newName = personName,
+                            newPhone = phone,
+                            newNote = note,
+                            newCompany = companyName
+                        )
+                        pendingScanPhoto?.takeIf { it.isFile }?.let { image ->
+                            if (savedId > 0L) {
+                                db.addAttachment(savedId, "photo", image.absolutePath)
+                                refresh()
+                            } else addDraftAttachment("photo", image)
+                        }
+                        pendingScanPhoto = null
+                        showScanDialog = false
+                    }) { Text("استفاده از اطلاعات") }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        pendingScanPhoto?.delete()
+                        pendingScanPhoto = null
+                        showScanDialog = false
+                    }) { Text("انصراف") }
+                }
+            )
+        }
+
         if (photoPreview != null) {
             Dialog(onDismissRequest = { photoPreview = null }) {
                 Surface(shape = RoundedCornerShape(16.dp)) {
