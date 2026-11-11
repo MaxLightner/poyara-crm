@@ -2,12 +2,15 @@ name: Android debug APK
 
 on:
   push:
+    branches: [main, "feature/**"]
+  pull_request:
     branches: [main]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 50
     permissions:
       contents: read
     steps:
@@ -16,6 +19,8 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - name: Build bundled Razavi Khorasan offline map
+        run: bash tools/build_razavi_map.sh
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
