@@ -94,7 +94,8 @@ class ReminderBootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
         val db = CrmDb(context.applicationContext)
-        db.allReminders().forEach { ReminderScheduler.schedule(context, it) }
+        db.allReminders().filter { it.dueAt > System.currentTimeMillis() }
+            .forEach { ReminderScheduler.schedule(context, it) }
         db.close()
     }
 }
