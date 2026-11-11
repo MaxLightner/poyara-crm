@@ -1,0 +1,101 @@
+package com.poyara.crm
+
+import android.content.Context
+import android.graphics.BitmapFactory
+import com.googlecode.tesseract.android.TessBaseAPI
+import java.io.File
+
+data class ScannedBusinessCard(
+    val personName: String,
+    val company: String,
+    val phone: String,
+    val address: String,
+    val email: String,
+    val website: String,
+    val rawText: String
+)
+
+object CardOcr {
+    fun recognize(context: Context, image: File): ScannedBusinessCard {
+        val root = File(context.filesDir, "tesseract")
+        val tessdata = File(root, "tessdata").apply { mkdirs() }
+        val model = File(tessdata, "fas.traineddata")
+        if (!model.isFile || model.length() < 100_000L) {
+            context.assets.open("tessdata/fas.traineddata").use { input ->
+                model.outputStream().use { output -> input.copyTo(output) }
+            }
+        }
+        val bitmap = BitmapFactory.decodeFile(image.absolutePath)
+            ?: error("تصویر کارت قابل خواندن نیست")
+        val api = TessBaseAPI()
+        try {
+            check(api.init(root.absolutePath, "fas")) {
+                "موتور تشخیص متن فارسی آماده نشد"
+            }
+            api.setPageSegMode(TessBaseAPI.PageSegMode.PSM_AUTO)
+            api.setImage(bitmap)
+            val raw = api.getUTF8Text().orEmpty()
+            return parse(raw)
+        } finally {
+            api.recycle()
+            bitmap.recycle()
+        }
+    }
+
+    private fun parse(rawText: String): ScannedBusinessCard {
+        val text = normalizeDigits(rawText)
+        val lines = text.lineSequence().map { it.trim() }
+            .filter { it.isNotBlank() }.toList()
+        val email = Regex("[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}", RegexOption.IGNORE_CASE)
+            .find(text)?.value.orEmpty()
+        val website = Regex("(?:https?://)?(?:www\\.)?[A-Z0-9-]+\\.(?:ir|com|net|org|co|io)(?:/\\S*)?",
+            RegexOption.IGNORE_CASE).find(text)?.value.orEmpty()
+        val phone = lines.firstNotNullOfOrNull { line ->
+            val candidate = line.replace(Regex("[^0-9+]+"), "")
+            val digits = candidate.filter(Char::isDigit)
+            candidate.takeIf { digits.length in 8..14 }
+        }.orEmpty()
+        val addressLine = lines.firstOrNull {
+            listOf("آدرس", "نشانی", "خیابان", "بلوار", "کوچه", "میدان", "پلاک", "address")
+                .any { key -> it.contains(key, ignoreCase = true) }
+        }.orEmpty()
+        val companyLine = lines.firstOrNull {
+            it != phone && listOf(
+                "مبلمان", "کابینت", "شرکت", "مجموعه", "فروشگاه", "گروه",
+                "استودیو", "معماری", "طراحی", "صنایع", "تولیدی", "کارخانه"
+            ).any { key -> it.contains(key, ignoreCase = true) }
+        }.orEmpty()
+        val personLine = lines.firstOrNull {
+            it != phone && it != companyLine &&
+                listOf("مدیرعامل", "مدیر", "مسئول", "کارشناس", "آقای", "خانم", "جناب", "سرکار")
+                    .any { key -> it.contains(key, ignoreCase = true) }
+        }.orEmpty()
+        val person = personLine.replace(
+            Regex("^(مدیرعامل|مدیر|مسئول|کارشناس|جناب آقای|آقای|سرکار خانم|خانم)\\s*[:：-]?\\s*"),
+            ""
+        ).trim()
+        val fallbackPerson = if (person.isBlank()) {
+            lines.firstOrNull { it != phone && it != companyLine && it != addressLine &&
+                !it.contains("@") && !it.contains("www.", true) }.orEmpty()
+        } else person
+        return ScannedBusinessCard(
+            personName = fallbackPerson.take(70),
+            company = companyLine.take(90),
+            phone = phone,
+            address = addressLine.removePrefix("آدرس").removePrefix("نشانی").trim(' ', ':', '：', '-').take(180),
+            email = email,
+            website = website,
+            rawText = rawText.trim().take(1800)
+        )
+    }
+
+    private fun normalizeDigits(value: String): String = buildString(value.length) {
+        value.forEach { ch ->
+            append(when (ch) {
+                in '۰'..'۹' -> ('0'.code + (ch.code - '۰'.code)).toChar()
+                in '٠'..'٩' -> ('0'.code + (ch.code - '٠'.code)).toChar()
+                else -> ch
+            })
+        }
+    }
+}
