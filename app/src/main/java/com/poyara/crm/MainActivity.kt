@@ -164,6 +164,7 @@ private fun CrmHome(initialRecordId: Long) {
         if (Build.VERSION.SDK_INT >= 29) context.getSystemService(RoleManager::class.java) else null
     }
     LaunchedEffect(Unit) {
+        ReminderScheduler.createChannel(context)
         callerEnabled = if (Build.VERSION.SDK_INT >= 29) {
             roleManager?.isRoleHeld(RoleManager.ROLE_CALL_SCREENING) == true
         } else false
@@ -533,6 +534,18 @@ private fun CrmHome(initialRecordId: Long) {
     ) { allowed ->
         if (allowed) requestCallerRole()
         else Toast.makeText(context, "نمایش جزئیات تماس به اجازه اعلان نیاز دارد", Toast.LENGTH_LONG).show()
+    }
+
+    val reminderNotificationPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { allowed ->
+        if (!allowed) Toast.makeText(context, "برای اعلان یادآوری، اجازه اعلان‌ها را فعال کن", Toast.LENGTH_LONG).show()
+    }
+
+    fun requestReminderNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) reminderNotificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 
     fun activateCallerContext() {
@@ -916,6 +929,14 @@ private fun CrmHome(initialRecordId: Long) {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.secondary
                 )
+                ReminderComposer(
+                    db = db,
+                    entryId = recordId,
+                    refreshKey = reminderRevision,
+                    ensureContact = { ensureRecord() },
+                    onSaved = { refresh() },
+                    onRequestNotification = { requestReminderNotificationPermission() }
+                )
             }
         } else if (page == "messages") {
             Column(
@@ -988,6 +1009,19 @@ private fun CrmHome(initialRecordId: Long) {
                     }
                 }
             }
+        } else if (page == "agenda") {
+            Column(
+                Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                WeeklyAgenda(
+                    db = db,
+                    allEntries = allEntries,
+                    refreshKey = reminderRevision,
+                    onOpenContact = { open(it) },
+                    onChanged = { refresh() }
+                )
+            }
         } else {
             Button(
                 onClick = { openMap(0L) },
@@ -1004,7 +1038,7 @@ private fun CrmHome(initialRecordId: Long) {
             OutlinedTextField(
                 value = search,
                 onValueChange = { search = it },
-                label = { Text("جست‌وجوی شماره، شرکت، متن یا برچسب") },
+                label = { Text("جست‌وجوی نام شخص، مجموعه، شماره یا برچسب") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )
@@ -1030,11 +1064,20 @@ private fun CrmHome(initialRecordId: Long) {
                 Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                filtered.groupBy { it.company.ifBlank { "بدون نام شرکت" } }.forEach { (company, members) ->
-                    item(key = "company_$company") {
-                        Text(company, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 12.dp))
+                filtered.groupBy { it.groupId ?: it.id }.forEach { (groupRootId, members) ->
+                    val groupRoot = allEntries.firstOrNull { it.id == groupRootId } ?: members.first()
+                    val groupTitle = groupRoot.company.ifBlank { groupRoot.name }.ifBlank { "گروه مخاطبان" }
+                    item(key = "group_${groupRootId}") {
+                        Text(
+                            "${groupTitle} · ${members.size} نفر",
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(top = 12.dp)
+                        )
                     }
                     items(members, key = { it.id }) { entry ->
+                        val related = allEntries.filter {
+                            (it.groupId ?: it.id) == groupRootId && it.id != entry.id
+                        }.sortedBy { it.name }
                         Card(
                             modifier = Modifier.fillMaxWidth().clickable { open(entry) },
                             shape = RoundedCornerShape(14.dp)
@@ -1048,6 +1091,11 @@ private fun CrmHome(initialRecordId: Long) {
                                     fontWeight = FontWeight.Bold,
                                     style = MaterialTheme.typography.titleMedium
                                 )
+                                if (entry.company.isNotBlank()) Text(
+                                    entry.company,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    style = MaterialTheme.typography.labelMedium
+                                )
                                 Text(entry.phone.ifBlank { "بدون شماره" }, fontWeight = FontWeight.SemiBold)
                                 if (entry.note.isNotBlank()) Text(
                                     entry.note,
@@ -1059,6 +1107,31 @@ private fun CrmHome(initialRecordId: Long) {
                                     color = MaterialTheme.colorScheme.primary,
                                     style = MaterialTheme.typography.labelMedium
                                 )
+                                if (related.isNotEmpty()) {
+                                    TextButton(onClick = {
+                                        expandedGroups = if (groupRootId in expandedGroups)
+                                            expandedGroups - groupRootId else expandedGroups + groupRootId
+                                    }) {
+                                        Text(
+                                            if (groupRootId in expandedGroups)
+                                                "بستن افراد مرتبط (${related.size}) ▲"
+                                            else "نمایش افراد مرتبط (${related.size}) ▼"
+                                        )
+                                    }
+                                    if (groupRootId in expandedGroups) {
+                                        related.forEach { person ->
+                                            TextButton(
+                                                onClick = { open(person) },
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Text(
+                                                    "${person.name.ifBlank { "بدون نام" }} · ${person.phone}",
+                                                    modifier = Modifier.fillMaxWidth()
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
                                 HorizontalDivider(modifier = Modifier.padding(top = 7.dp, bottom = 3.dp))
                                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                     TextButton(
