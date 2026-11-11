@@ -12,8 +12,8 @@ android {
         applicationId = "com.poyara.crm"
         minSdk = 26
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.5.0"
+        versionCode = 6
+        versionName = "0.6.0"
     }
 
     buildTypes {
@@ -45,5 +45,6 @@ dependencies {
     implementation("org.mapsforge:mapsforge-map-android:0.25.0")
     implementation("org.mapsforge:mapsforge-map-reader:0.25.0")
     implementation("org.mapsforge:mapsforge-themes:0.25.0")
+    implementation("cz.adaptech.tesseract4android:tesseract4android-openmp:4.9.0")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
