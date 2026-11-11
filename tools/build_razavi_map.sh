@@ -40,6 +40,7 @@ if [[ -s tools/razavi.poly ]]; then
   "$OSMOSIS_BIN" --rbf file=tools/iran-latest.osm.pbf \
     --bp file=tools/razavi.poly \
     --mw file="$OUT" type=hd threads=2 \
+    bbox=33.857637,56.229356,37.70523,61.283935 \
     map-start-position=36.2972,59.6067 map-start-zoom=12 \
     preferred-languages=fa,en
 else
