@@ -58,7 +58,7 @@ class OfflineMapActivity : ComponentActivity() {
     private var userMarker: Marker? = null
     private var filterTag = "همه"
     private var radiusMeters = 2000
-    private var nextLocationAction = "nearby"
+    private var nextLocationAction = "center"
     private val mapFile by lazy { File(filesDir, "maps/offline.map") }
 
     private val mapPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -474,11 +474,12 @@ class OfflineMapActivity : ComponentActivity() {
             setStroke(dp(4), Color.WHITE)
             setSize(dp(20), dp(20))
         }
-        userMarker = Marker(
+        val marker = Marker(
             LatLong(location.latitude, location.longitude),
             AndroidGraphicFactory.convertToBitmap(drawable), dp(10), dp(10)
         )
-        mapView.layerManager.layers.add(userMarker)
+        userMarker = marker
+        mapView.layerManager.layers.add(marker)
         mapView.layerManager.redrawLayers()
     }
 
