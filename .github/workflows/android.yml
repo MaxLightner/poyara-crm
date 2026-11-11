@@ -2,7 +2,7 @@ name: Android debug APK
 
 on:
   push:
-    branches: [main, "feature/**"]
+    branches: [main, "feature/**", "fix/**"]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -23,19 +23,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: actions/cache/restore@v4
-        id: razavi-map-cache
-        with:
-          path: app/src/main/assets/maps/razavi.map
-          key: razavi-khorasan-v1-${{ hashFiles('tools/build_razavi_map.sh', 'tools/create_razavi_poly.py') }}
-      - name: Build bundled Razavi Khorasan offline map
-        if: steps.razavi-map-cache.outputs.cache-hit != 'true'
-        run: bash tools/build_razavi_map.sh
-      - uses: actions/cache/save@v4
-        if: always() && steps.razavi-map-cache.outputs.cache-hit != 'true' && hashFiles('app/src/main/assets/maps/razavi.map') != ''
-        with:
-          path: app/src/main/assets/maps/razavi.map
-          key: razavi-khorasan-v1-${{ hashFiles('tools/build_razavi_map.sh', 'tools/create_razavi_poly.py') }}
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
