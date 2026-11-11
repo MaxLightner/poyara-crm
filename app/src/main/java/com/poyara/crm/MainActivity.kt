@@ -244,6 +244,10 @@ private fun CrmHome(initialRecordId: Long) {
         )
         recordId = id
         chosenTags = tags
+        if (newGroupId <= 0L) {
+            db.all().firstOrNull { it.id == id }?.company
+                ?.takeIf { it.isNotBlank() }?.let { db.updateGroupCompany(id, it) }
+        }
         if (wasNew) attachDraftData(id)
         if (wasNew) clearDraft()
         refresh()
@@ -262,6 +266,8 @@ private fun CrmHome(initialRecordId: Long) {
                 selectedGroupId.takeIf { it > 0L }
             )
             chosenTags = tags
+            db.all().firstOrNull { it.id == recordId }?.company
+                ?.takeIf { it.isNotBlank() }?.let { db.updateGroupCompany(recordId, it) }
             attachDraftData(recordId)
             clearDraft()
             refresh()
