@@ -368,6 +368,19 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
         }
     }
 
+    fun setGroup(entryId: Long, rootEntryId: Long?) {
+        require(entryId > 0L && (rootEntryId == null || rootEntryId > 0L))
+        if (rootEntryId == entryId) return
+        writableDatabase.update(
+            "entries",
+            ContentValues().apply {
+                if (rootEntryId == null) putNull("group_id") else put("group_id", rootEntryId)
+            },
+            "id=?",
+            arrayOf(entryId.toString())
+        )
+    }
+
     fun addAttachment(recordId: Long, kind: String, path: String): Long {
         require(recordId > 0)
         val values = ContentValues().apply {
