@@ -321,10 +321,9 @@ private fun CrmHome(initialRecordId: Long) {
     }
 
     fun beginRecording() {
-        val id = ensureRecord()
-        if (id == 0L) return
         val folder = File(context.filesDir, "attachments").apply { mkdirs() }
-        val target = File(folder, "voice_${id}_${System.currentTimeMillis()}.m4a")
+        val owner = if (recordId > 0L) recordId.toString() else "draft"
+        val target = File(folder, "voice_${owner}_${System.currentTimeMillis()}.m4a")
         try {
             val r = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 MediaRecorder(context)
@@ -365,11 +364,12 @@ private fun CrmHome(initialRecordId: Long) {
             isRecording = false
         }
         if (succeeded && target != null) {
-            val id = if (recordId > 0L) recordId else ensureRecord()
-            if (id > 0L) {
-                db.addAttachment(id, "audio", target.absolutePath)
+            if (recordId > 0L) {
+                db.addAttachment(recordId, "audio", target.absolutePath)
                 refresh()
-            } else target.delete()
+            } else {
+                addDraftAttachment("audio", target)
+            }
         }
     }
 
@@ -385,11 +385,12 @@ private fun CrmHome(initialRecordId: Long) {
     ) { photographed ->
         val file = pendingPhoto
         if (photographed && file != null) {
-            val id = if (recordId > 0L) recordId else ensureRecord()
-            if (id > 0L) {
-                db.addAttachment(id, "photo", file.absolutePath)
+            if (recordId > 0L) {
+                db.addAttachment(recordId, "photo", file.absolutePath)
                 refresh()
-            } else file.delete()
+            } else {
+                addDraftAttachment("photo", file)
+            }
         } else {
             file?.delete()
         }
@@ -397,10 +398,9 @@ private fun CrmHome(initialRecordId: Long) {
     }
 
     fun takePhoto() {
-        val id = ensureRecord()
-        if (id == 0L) return
         val folder = File(context.filesDir, "attachments").apply { mkdirs() }
-        val file = File(folder, "photo_${id}_${System.currentTimeMillis()}.jpg")
+        val owner = if (recordId > 0L) recordId.toString() else "draft"
+        val file = File(folder, "photo_${owner}_${System.currentTimeMillis()}.jpg")
         pendingPhoto = file
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
         cameraLauncher.launch(uri)
@@ -495,7 +495,19 @@ private fun CrmHome(initialRecordId: Long) {
 
     val mapLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
-    ) {
+    ) { result ->
+        val data = result.data
+        if (result.resultCode == android.app.Activity.RESULT_OK &&
+            data?.hasExtra("latitude") == true && data.hasExtra("longitude")
+        ) {
+            draftLatitude = data.getDoubleExtra("latitude", 0.0)
+            draftLongitude = data.getDoubleExtra("longitude", 0.0)
+            if (recordId > 0L && draftLatitude != null && draftLongitude != null) {
+                db.setLocation(recordId, draftLatitude!!, draftLongitude!!,
+                    data.getStringExtra("location_source") ?: "manual")
+                refresh()
+            } else persistDraft()
+        }
         refresh()
     }
 
@@ -503,6 +515,7 @@ private fun CrmHome(initialRecordId: Long) {
         mapLauncher.launch(
             Intent(context, OfflineMapActivity::class.java)
                 .putExtra("entry_id", entryId)
+                .putExtra("allow_pick_location", true)
         )
     }
 
