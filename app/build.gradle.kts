@@ -46,5 +46,6 @@ dependencies {
     implementation("org.mapsforge:mapsforge-map-reader:0.27.0")
     implementation("org.mapsforge:mapsforge-themes:0.27.0")
     implementation("cz.adaptech.tesseract4android:tesseract4android-openmp:4.9.0")
+    implementation("com.google.mlkit:text-recognition:16.0.1")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
