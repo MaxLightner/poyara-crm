@@ -368,6 +368,16 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
         }
     }
 
+    fun updateGroupCompany(rootEntryId: Long, company: String) {
+        require(rootEntryId > 0L)
+        writableDatabase.update(
+            "entries",
+            ContentValues().apply { put("company", company.trim()) },
+            "id=? OR group_id=?",
+            arrayOf(rootEntryId.toString(), rootEntryId.toString())
+        )
+    }
+
     fun setGroup(entryId: Long, rootEntryId: Long?) {
         require(entryId > 0L && (rootEntryId == null || rootEntryId > 0L))
         if (rootEntryId == entryId) return
