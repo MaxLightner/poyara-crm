@@ -594,14 +594,18 @@ private fun CrmHome(initialRecordId: Long) {
                 listOf(
                     Triple("capture", "ثبت سریع", "✎"),
                     Triple("list", "مخاطبان", "▦"),
+                    Triple("agenda", "برنامه کاری", "▤"),
                     Triple("messages", "پیامک", "✉")
                 ).forEach { (key, title, symbol) ->
                     NavigationBarItem(
                         selected = page == key,
                         onClick = {
-                            if (key == "list") { refresh(); page = key }
-                            else if (key == "messages") goToMessages()
-                            else page = key
+                            when (key) {
+                                "list" -> { refresh(); page = key }
+                                "agenda" -> { refresh(); page = key }
+                                "messages" -> goToMessages()
+                                else -> page = key
+                            }
                         },
                         icon = { Text(symbol, style = MaterialTheme.typography.titleLarge) },
                         label = { Text(title, style = MaterialTheme.typography.labelMedium) }
@@ -614,31 +618,18 @@ private fun CrmHome(initialRecordId: Long) {
         Modifier.fillMaxSize().padding(insets).padding(horizontal = 16.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Box(
-            modifier = Modifier.fillMaxWidth()
-                .background(
-                    Brush.horizontalGradient(listOf(Color(0xFF0B7569), Color(0xFF123D48))),
-                    RoundedCornerShape(24.dp)
-                ).padding(horizontal = 18.dp, vertical = 14.dp)
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column {
-                    Text("POYARA", color = Color(0xFFAEF3DF),
-                        style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
-                    Text(
-                        when (page) {
-                            "list" -> "شبکه ارتباطات کاری"
-                            "messages" -> "مرکز پیامک"
-                            else -> "ثبت مخاطب"
-                        },
-                        color = Color.White, style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-                Spacer(Modifier.weight(1f))
-                if (page != "capture") {
-                    Text("${allEntries.size} مخاطب", color = Color(0xFFD2EEE7),
-                        style = MaterialTheme.typography.labelLarge)
+        Box(Modifier.fillMaxWidth().height(54.dp)) {
+            if (page == "capture") {
+                Box(
+                    Modifier.align(Alignment.CenterEnd)
+                        .size(46.dp)
+                        .background(Color(0xFFD8F3E9), RoundedCornerShape(12.dp))
+                        .clickable(enabled = !scanBusy) { startCardScan() },
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (scanBusy) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+                    else Text("▣", color = Color(0xFF08685F),
+                        style = MaterialTheme.typography.headlineMedium)
                 }
             }
         }
@@ -658,6 +649,76 @@ private fun CrmHome(initialRecordId: Long) {
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
+                OutlinedTextField(
+                    value = companyName,
+                    onValueChange = {
+                        companyName = it
+                        save(newCompany = it)
+                    },
+                    label = { Text("نام مجموعه / برند") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = groupSearch,
+                    onValueChange = { groupSearch = it },
+                    label = { Text("اتصال به مجموعه یا مخاطب قبلی") },
+                    placeholder = { Text("نام مدیر، برند یا مجموعه را جست‌وجو کن") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (selectedGroupId > 0L) {
+                    val selectedRoot = allEntries.firstOrNull { it.id == selectedGroupId }
+                    Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFE3F3EF))) {
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text("عضو این مجموعه", fontWeight = FontWeight.Bold)
+                                Text(
+                                    selectedRoot?.company?.ifBlank { selectedRoot.name }
+                                        ?: "مخاطب مرتبط",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                            TextButton(onClick = {
+                                selectedGroupId = 0L
+                                save(newGroupId = 0L)
+                            }) { Text("لغو اتصال") }
+                        }
+                    }
+                } else if (groupSearch.isNotBlank()) {
+                    val candidates = allEntries.filter { entry ->
+                        listOf(entry.name, entry.company, entry.phone)
+                            .any { it.contains(groupSearch, ignoreCase = true) }
+                    }.take(5)
+                    if (candidates.isEmpty()) {
+                        Text("مخاطب یا مجموعه‌ای با این عبارت پیدا نشد.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.secondary)
+                    } else {
+                        candidates.forEach { candidate ->
+                            TextButton(
+                                onClick = {
+                                    val rootId = candidate.groupId ?: candidate.id
+                                    val root = allEntries.firstOrNull { it.id == rootId } ?: candidate
+                                    selectedGroupId = rootId
+                                    if (companyName.isBlank()) companyName = root.company
+                                    groupSearch = ""
+                                    save(newCompany = companyName, newGroupId = rootId)
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    listOf(candidate.name, candidate.company, candidate.phone)
+                                        .filter { it.isNotBlank() }.joinToString(" · "),
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                        }
+                    }
+                }
                 OutlinedTextField(
                     value = phone,
                     onValueChange = {
@@ -710,15 +771,13 @@ private fun CrmHome(initialRecordId: Long) {
                                 "موقعیت ثبت شده: %.5f، %.5f".format(
                                     current.latitude, current.longitude
                                 )
+                            else if (draftLatitude != null && draftLongitude != null)
+                                "موقعیت موقت انتخاب شد: %.5f، %.5f".format(draftLatitude, draftLongitude)
                             else "هنوز موقعیت ثبت نشده؛ GPS یا لمس روی نقشه",
                             style = MaterialTheme.typography.bodySmall
                         )
                         Button(
-                            onClick = {
-                                val id = ensureRecord()
-                                if (id > 0L) openMap(id)
-                            },
-                            enabled = personName.isNotBlank() && phone.isNotBlank()
+                            onClick = { openMap(recordId, allowPick = true) }
                         ) {
                             Text("⌖ ثبت روی نقشه یا GPS")
                         }
@@ -731,15 +790,11 @@ private fun CrmHome(initialRecordId: Long) {
                             if (isRecording) stopRecording()
                             else permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                         },
-                        enabled = isRecording || (personName.isNotBlank() && phone.isNotBlank()),
                         colors = if (isRecording) ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.error
                         ) else ButtonDefaults.buttonColors()
                     ) { Text(if (isRecording) "■ پایان ضبط" else "● ضبط صوت") }
-                    OutlinedButton(
-                        onClick = { takePhoto() },
-                        enabled = personName.isNotBlank() && phone.isNotBlank()
-                    ) { Text("📷 عکس فوری") }
+                    OutlinedButton(onClick = { takePhoto() }) { Text("📷 عکس فوری") }
                 }
 
                 if (files.isNotEmpty()) {
