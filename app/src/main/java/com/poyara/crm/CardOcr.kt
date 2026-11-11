@@ -2,6 +2,10 @@ package com.poyara.crm
 
 import android.content.Context
 import android.graphics.BitmapFactory
+import com.google.android.gms.tasks.Tasks
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import com.googlecode.tesseract.android.TessBaseAPI
 import java.io.File
 
@@ -27,19 +31,34 @@ object CardOcr {
         }
         val bitmap = BitmapFactory.decodeFile(image.absolutePath)
             ?: error("تصویر کارت قابل خواندن نیست")
-        val api = TessBaseAPI()
-        try {
-            check(api.init(root.absolutePath, "fas")) {
-                "موتور تشخیص متن فارسی آماده نشد"
+        val persianText = runCatching {
+            val api = TessBaseAPI()
+            try {
+                check(api.init(root.absolutePath, "fas")) {
+                    "موتور تشخیص متن فارسی آماده نشد"
+                }
+                api.setPageSegMode(TessBaseAPI.PageSegMode.PSM_AUTO)
+                api.setImage(bitmap)
+                api.getUTF8Text().orEmpty()
+            } finally {
+                api.recycle()
             }
-            api.setPageSegMode(TessBaseAPI.PageSegMode.PSM_AUTO)
-            api.setImage(bitmap)
-            val raw = api.getUTF8Text().orEmpty()
-            return parse(raw)
-        } finally {
-            api.recycle()
-            bitmap.recycle()
-        }
+        }.getOrDefault("")
+
+        val latinText = runCatching {
+            val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+            try {
+                Tasks.await(recognizer.process(InputImage.fromBitmap(bitmap, 0))).text
+            } finally {
+                recognizer.close()
+            }
+        }.getOrDefault("")
+
+        bitmap.recycle()
+        val combined = listOf(persianText, latinText)
+            .filter { it.isNotBlank() }.distinct().joinToString("\\n")
+        check(combined.isNotBlank()) { "متنی از کارت تشخیص داده نشد" }
+        return parse(combined)
     }
 
     private fun parse(rawText: String): ScannedBusinessCard {
@@ -67,7 +86,7 @@ object CardOcr {
         }.orEmpty()
         val personLine = lines.firstOrNull {
             it != phone && it != companyLine &&
-                listOf("مدیرعامل", "مدیر", "مسئول", "کارشناس", "آقای", "خانم", "جناب", "سرکار")
+                listOf("مدیرعامل", "مدیر", "مسئول", "کارشناس", "آقای", "خانم", "جناب", "سرکار", "name:", "manager:", "mr.", "ms.")
                     .any { key -> it.contains(key, ignoreCase = true) }
         }.orEmpty()
         val person = personLine.replace(
