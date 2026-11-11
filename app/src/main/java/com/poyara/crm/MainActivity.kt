@@ -594,19 +594,33 @@ private fun CrmHome(initialRecordId: Long) {
     Scaffold(
         containerColor = Color(0xFFF4F7F8),
         floatingActionButton = {
-            if (page == "capture" && personName.isNotBlank() && phone.isNotBlank()) {
+            val hasAnyInformation = personName.isNotBlank() ||
+                companyName.isNotBlank() || phone.isNotBlank() || note.isNotBlank() ||
+                draftAttachments.isNotEmpty() || draftLatitude != null || recordId > 0L
+            if (page == "capture" && hasAnyInformation) {
+                val canComplete = personName.isNotBlank() && phone.isNotBlank()
                 FloatingActionButton(
+                    modifier = Modifier.size(64.dp),
+                    containerColor = if (canComplete) Color(0xFF087866) else Color(0xFFD9E5E3),
+                    contentColor = if (canComplete) Color.White else Color(0xFF526C69),
+                    shape = RoundedCornerShape(18.dp),
                     onClick = {
-                        if (save() > 0L) {
-                            Toast.makeText(context, "مخاطب ذخیره شد", Toast.LENGTH_SHORT).show()
+                        if (!canComplete) {
+                            Toast.makeText(
+                                context, "برای ثبت نهایی نام و شماره تماس را وارد کن",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        } else if (save() > 0L) {
+                            Toast.makeText(context, "ثبت شد؛ مخاطب بعدی را وارد کن", Toast.LENGTH_SHORT).show()
                             newEntry()
                         }
                     }
                 ) {
-                    Text("✓", style = MaterialTheme.typography.headlineMedium)
+                    Text("✓", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
                 }
             }
         },
+        // Material 3 resolves End to the physical left in the app's RTL layout.
         floatingActionButtonPosition = FabPosition.End,
         bottomBar = {
             NavigationBar(containerColor = Color.White, tonalElevation = 8.dp) {
