@@ -221,7 +221,13 @@ fun WeeklyAgenda(
                                 checked = reminder.done,
                                 onCheckedChange = { checked ->
                                     db.completeReminder(reminder.id, checked)
-                                    if (checked) ReminderScheduler.cancel(context, reminder.id)
+                                    if (checked) {
+                                        ReminderScheduler.cancel(context, reminder.id)
+                                    } else {
+                                        db.allReminders(includeDone = true)
+                                            .firstOrNull { it.id == reminder.id }
+                                            ?.let { ReminderScheduler.schedule(context, it) }
+                                    }
                                     onChanged()
                                 }
                             )
