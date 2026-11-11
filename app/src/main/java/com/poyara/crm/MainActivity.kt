@@ -837,7 +837,9 @@ private fun CrmHome(initialRecordId: Long) {
                             val parts = saved.split("|", limit = 2)
                             if (parts.size == 2 && parts[0] == "audio") parts[1] else null
                         },
-                    contacts = allEntries,
+                    // Never upload unrelated customer records to the AI service.
+                    // Matching is performed locally after the transcript is returned.
+                    contacts = allEntries.filter { it.id == recordId },
                     onImported = { refresh() }
                 )
 
