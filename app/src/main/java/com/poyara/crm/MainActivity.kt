@@ -14,6 +14,8 @@ import android.media.MediaPlayer
 import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -49,6 +51,9 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 private val tagChoices = listOf("مبلمان", "کابینت", "معماری", "پیگیری", "مشتری ثابت", "مهم")
 
@@ -100,6 +105,33 @@ private fun CrmHome(initialRecordId: Long) {
     var personName by rememberSaveable {
         mutableStateOf(startupEntry?.name ?: if (initialRecordId == 0L) draftPrefs.getString("name", "").orEmpty() else "")
     }
+    var companyName by rememberSaveable {
+        mutableStateOf(startupEntry?.company ?: if (initialRecordId == 0L) draftPrefs.getString("company", "").orEmpty() else "")
+    }
+    var selectedGroupId by rememberSaveable {
+        mutableLongStateOf(startupEntry?.groupId ?: if (initialRecordId == 0L) draftPrefs.getLong("group_id", 0L) else 0L)
+    }
+    var groupSearch by rememberSaveable { mutableStateOf("") }
+    var expandedGroups by remember { mutableStateOf(emptySet<Long>()) }
+    var draftAttachments by remember {
+        mutableStateOf((draftPrefs.getStringSet("attachments", emptySet()) ?: emptySet()).toSet())
+    }
+    var draftLatitude by remember {
+        mutableStateOf(draftPrefs.getString("draft_lat", null)?.toDoubleOrNull())
+    }
+    var draftLongitude by remember {
+        mutableStateOf(draftPrefs.getString("draft_lon", null)?.toDoubleOrNull())
+    }
+    var scanBusy by remember { mutableStateOf(false) }
+    var showScanDialog by remember { mutableStateOf(false) }
+    var pendingScanPhoto by remember { mutableStateOf<File?>(null) }
+    var scanPersonName by remember { mutableStateOf("") }
+    var scanCompany by remember { mutableStateOf("") }
+    var scanPhone by remember { mutableStateOf("") }
+    var scanAddress by remember { mutableStateOf("") }
+    var scanEmail by remember { mutableStateOf("") }
+    var scanWebsite by remember { mutableStateOf("") }
+    var scanRawText by remember { mutableStateOf("") }
     var phone by rememberSaveable {
         mutableStateOf(startupEntry?.phone ?: if (initialRecordId == 0L) draftPrefs.getString("phone", "").orEmpty() else "")
     }
@@ -112,6 +144,7 @@ private fun CrmHome(initialRecordId: Long) {
     }
     var allEntries by remember { mutableStateOf(db.all()) }
     var fileRevision by remember { mutableIntStateOf(0) }
+    var reminderRevision by remember { mutableIntStateOf(0) }
     var search by rememberSaveable { mutableStateOf("") }
     var filterTag by rememberSaveable { mutableStateOf("همه") }
     var pendingPhoto by remember { mutableStateOf<File?>(null) }
@@ -139,42 +172,79 @@ private fun CrmHome(initialRecordId: Long) {
     fun refresh() {
         allEntries = db.all()
         fileRevision++
+        reminderRevision++
     }
 
     fun persistDraft(
         newName: String = personName,
         newPhone: String = phone,
         newNote: String = note,
-        newTags: Set<String> = chosenTags
+        newTags: Set<String> = chosenTags,
+        newCompany: String = companyName,
+        newGroupId: Long = selectedGroupId
     ) {
         if (recordId > 0L) return
-        draftPrefs.edit()
+        val editor = draftPrefs.edit()
             .putString("name", newName)
+            .putString("company", newCompany)
+            .putLong("group_id", newGroupId)
             .putString("phone", newPhone)
             .putString("note", newNote)
             .putStringSet("tags", newTags.toSet())
-            .apply()
+            .putStringSet("attachments", draftAttachments.toSet())
+        if (draftLatitude != null && draftLongitude != null) {
+            editor.putString("draft_lat", draftLatitude.toString())
+                .putString("draft_lon", draftLongitude.toString())
+        }
+        editor.apply()
     }
 
     fun clearDraft() {
         draftPrefs.edit().clear().apply()
+        draftAttachments = emptySet()
+        draftLatitude = null
+        draftLongitude = null
+    }
+
+    fun addDraftAttachment(kind: String, file: File) {
+        draftAttachments = draftAttachments + "${kind}|${file.absolutePath}"
+        persistDraft()
+    }
+
+    fun attachDraftData(id: Long) {
+        draftAttachments.forEach { encoded ->
+            val parts = encoded.split("|", limit = 2)
+            if (parts.size == 2 && File(parts[1]).isFile) {
+                db.addAttachment(id, parts[0], parts[1])
+            }
+        }
+        if (draftLatitude != null && draftLongitude != null) {
+            db.setLocation(id, draftLatitude!!, draftLongitude!!, "manual")
+        }
     }
 
     fun save(
         newName: String = personName,
         newPhone: String = phone,
         newNote: String = note,
-        newTags: Set<String> = chosenTags
+        newTags: Set<String> = chosenTags,
+        newCompany: String = companyName,
+        newGroupId: Long = selectedGroupId
     ): Long {
         val tags = newTags + inferredTags(newNote)
         if (recordId == 0L && (newName.isBlank() || newPhone.isBlank())) {
-            persistDraft(newName, newPhone, newNote, tags)
+            persistDraft(newName, newPhone, newNote, tags, newCompany, newGroupId)
             return 0L
         }
-        val id = db.save(recordId, newName, newPhone, newNote, tags)
+        val wasNew = recordId == 0L
+        val id = db.save(
+            recordId, newName, newPhone, newNote, tags,
+            newCompany, newGroupId.takeIf { it > 0L }
+        )
         recordId = id
         chosenTags = tags
-        clearDraft()
+        if (wasNew) attachDraftData(id)
+        if (wasNew) clearDraft()
         refresh()
         return id
     }
@@ -186,8 +256,12 @@ private fun CrmHome(initialRecordId: Long) {
                 return 0L
             }
             val tags = chosenTags + inferredTags(note)
-            recordId = db.save(0L, personName, phone, note, tags)
+            recordId = db.save(
+                0L, personName, phone, note, tags, companyName,
+                selectedGroupId.takeIf { it > 0L }
+            )
             chosenTags = tags
+            attachDraftData(recordId)
             clearDraft()
             refresh()
         }
@@ -197,6 +271,9 @@ private fun CrmHome(initialRecordId: Long) {
     fun open(entry: ContactEntry) {
         recordId = entry.id
         personName = entry.name
+        companyName = entry.company
+        selectedGroupId = entry.groupId ?: 0L
+        groupSearch = ""
         phone = entry.phone
         note = entry.note
         chosenTags = entry.tags
@@ -212,6 +289,9 @@ private fun CrmHome(initialRecordId: Long) {
         clearDraft()
         recordId = 0L
         personName = ""
+        companyName = ""
+        selectedGroupId = 0L
+        groupSearch = ""
         phone = ""
         note = ""
         chosenTags = emptySet()
@@ -221,6 +301,7 @@ private fun CrmHome(initialRecordId: Long) {
         smsBody = ""
         page = "capture"
         fileRevision++
+        reminderRevision++
     }
 
     fun goToMessages() {
