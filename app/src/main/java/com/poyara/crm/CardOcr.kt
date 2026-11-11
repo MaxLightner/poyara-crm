@@ -32,7 +32,7 @@ object CardOcr {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(image.absolutePath, bounds)
         val longestSide = maxOf(bounds.outWidth, bounds.outHeight)
-        val sample = if (longestSide > 2400) (longestSide / 2400).coerceAtLeast(1) else 1
+        val sample = if (longestSide > 2400) ((longestSide + 2399) / 2400).coerceAtLeast(1) else 1
         val bitmap = BitmapFactory.decodeFile(
             image.absolutePath,
             BitmapFactory.Options().apply { inSampleSize = sample }
