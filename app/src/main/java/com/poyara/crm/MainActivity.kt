@@ -560,11 +560,11 @@ private fun CrmHome(initialRecordId: Long) {
         refresh()
     }
 
-    fun openMap(entryId: Long) {
+    fun openMap(entryId: Long, allowPick: Boolean = false) {
         mapLauncher.launch(
             Intent(context, OfflineMapActivity::class.java)
                 .putExtra("entry_id", entryId)
-                .putExtra("allow_pick_location", true)
+                .putExtra("allow_pick_location", allowPick || entryId > 0L)
         )
     }
 
