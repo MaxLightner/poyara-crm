@@ -64,6 +64,10 @@ class ReminderReceiver : BroadcastReceiver() {
         val reminderId = intent.getLongExtra("reminder_id", 0L)
         val entryId = intent.getLongExtra("entry_id", 0L)
         if (reminderId <= 0L || entryId <= 0L) return
+        if (Build.VERSION.SDK_INT >= 33 &&
+            context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) return
         ReminderScheduler.createChannel(context)
         val db = CrmDb(context.applicationContext)
         val contact = db.all().firstOrNull { it.id == entryId }
