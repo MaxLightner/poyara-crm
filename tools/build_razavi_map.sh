@@ -29,7 +29,10 @@ if curl -fL --retry 2 --max-time 60 \
   -A "POYARA-CRM offline map builder" \
   https://api.openstreetmap.org/api/0.6/relation/537657/full \
   -o tools/razavi-boundary.osm; then
-  python3 tools/create_razavi_poly.py tools/razavi-boundary.osm tools/razavi.poly
+  if ! python3 tools/create_razavi_poly.py tools/razavi-boundary.osm tools/razavi.poly; then
+    echo "Province polygon assembly failed; using the documented Razavi bounding box."
+    rm -f tools/razavi.poly
+  fi
 fi
 
 OUT="app/src/main/assets/maps/razavi.map"
