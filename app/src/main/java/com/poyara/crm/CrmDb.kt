@@ -43,11 +43,18 @@ data class WorkReminder(
     val done: Boolean
 )
 
+data class VoiceReview(
+    val jobId: String,
+    val audioPath: String,
+    val resultJson: String,
+    val applied: Boolean
+)
+
 /**
  * Local-first storage: no Contacts Provider access and no network dependency.
  * A text edit writes immediately; image/voice files remain in private app storage.
  */
-class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null, 6) {
+class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null, 7) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             """CREATE TABLE entries (
@@ -79,6 +86,7 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
         createNotesTable(db)
         createCommunicationsTables(db)
         createRemindersTable(db)
+        createVoiceReviewsTable(db)
     }
 
     private fun createNotesTable(db: SQLiteDatabase) {
@@ -103,7 +111,56 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
             db.execSQL("ALTER TABLE entries ADD COLUMN group_id INTEGER")
             createRemindersTable(db)
         }
+        if (oldVersion < 7) createVoiceReviewsTable(db)
     }
+
+    private fun createVoiceReviewsTable(db: SQLiteDatabase) {
+        db.execSQL("""CREATE TABLE IF NOT EXISTS voice_reviews (
+            job_id TEXT PRIMARY KEY,
+            audio_path TEXT NOT NULL UNIQUE,
+            result_json TEXT NOT NULL,
+            applied INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL
+        )""")
+        db.execSQL("CREATE INDEX IF NOT EXISTS voice_reviews_audio ON voice_reviews(audio_path)")
+    }
+
+    fun voiceReview(audioPath: String): VoiceReview? =
+        readableDatabase.query(
+            "voice_reviews", null, "audio_path=?", arrayOf(audioPath),
+            null, null, null
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) null else VoiceReview(
+                cursor.getString(cursor.getColumnIndexOrThrow("job_id")),
+                cursor.getString(cursor.getColumnIndexOrThrow("audio_path")),
+                cursor.getString(cursor.getColumnIndexOrThrow("result_json")),
+                cursor.getInt(cursor.getColumnIndexOrThrow("applied")) == 1
+            )
+        }
+
+    fun saveVoiceReview(jobId: String, audioPath: String, json: String) {
+        require(audioPath.isNotBlank() && json.isNotBlank())
+        val previous = voiceReview(audioPath)
+        require(previous?.applied != true) { "این ویس قبلاً وارد پرونده‌ها شده است" }
+        writableDatabase.insertWithOnConflict(
+            "voice_reviews", null, ContentValues().apply {
+                put("job_id", jobId)
+                put("audio_path", audioPath)
+                put("result_json", json)
+                put("applied", 0)
+                put("updated_at", System.currentTimeMillis())
+            }, SQLiteDatabase.CONFLICT_REPLACE
+        )
+    }
+
+    fun markVoiceReviewApplied(jobId: String) {
+        val count = writableDatabase.update(
+            "voice_reviews", ContentValues().apply { put("applied", 1) },
+            "job_id=? AND applied=0", arrayOf(jobId)
+        )
+        require(count == 1) { "نتیجه صوتی قبلاً وارد شده یا پیدا نشد" }
+    }
+
 
     private fun createRemindersTable(db: SQLiteDatabase) {
         db.execSQL("""CREATE TABLE IF NOT EXISTS reminders (
