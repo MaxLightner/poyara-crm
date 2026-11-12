@@ -24,7 +24,7 @@ internal object VoiceQueue {
     fun record(context: Context, file: File, entryId: Long) {
         val db = CrmDb(context.applicationContext)
         try {
-            val job = db.queueVoiceUpload(file.absolutePath, entryId)
+            val job = db.queueVoiceUpload(file.absolutePath, entryId, PoyaraAuth(context).email)
             if (PoyaraAuth(context).hasSession && db.voiceReview(file.absolutePath) == null) {
                 enqueue(context, job, replace = false)
             }
@@ -32,11 +32,13 @@ internal object VoiceQueue {
     }
 
     fun schedulePending(context: Context) {
-        if (!PoyaraAuth(context).hasSession) return
+        val auth = PoyaraAuth(context)
+        if (!auth.hasSession) return
         val db = CrmDb(context.applicationContext)
         try {
             db.pendingVoiceUploads().forEach { job ->
-                if (db.voiceReview(job.audioPath) == null)
+                if ((job.ownerEmail.isBlank() || job.ownerEmail.equals(auth.email, true)) &&
+                    db.voiceReview(job.audioPath) == null)
                     enqueue(context, job, replace = false)
             }
         } finally { db.close() }
@@ -46,7 +48,10 @@ internal object VoiceQueue {
         if (!PoyaraAuth(context).hasSession) return
         val db = CrmDb(context.applicationContext)
         try {
-            db.voiceUpload(audioPath) ?: db.queueVoiceUpload(audioPath)
+            val previous = db.voiceUpload(audioPath)
+                ?: db.queueVoiceUpload(audioPath, ownerEmail = PoyaraAuth(context).email)
+            if (previous.ownerEmail.isNotBlank() &&
+                !previous.ownerEmail.equals(PoyaraAuth(context).email, true)) return
             db.retryVoiceUpload(audioPath)
             db.voiceUpload(audioPath)?.let { enqueue(context, it, replace = true) }
         } finally { db.close() }
@@ -85,8 +90,15 @@ internal class VoiceUploadWorker(
                 db.markVoiceUpload(path, "failed", "فایل صوتی روی گوشی پیدا نشد")
                 return Result.failure()
             }
+            // Never upload a previous user's private recording with a different login.
+            val auth = PoyaraAuth(applicationContext)
+            if (job.ownerEmail.isNotBlank() &&
+                !job.ownerEmail.equals(auth.email, true)) {
+                db.markVoiceUpload(path, "pending", "این ویس متعلق به حساب دیگری است")
+                return Result.success()
+            }
             // Without an account, preserve the job locally. Login reschedules it.
-            if (!PoyaraAuth(applicationContext).hasSession) {
+            if (!auth.hasSession) {
                 db.markVoiceUpload(path, "pending", "برای ارسال، با ایمیل وارد شو")
                 return Result.success()
             }
