@@ -15,7 +15,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -33,12 +32,10 @@ internal fun VoiceAgentPanel(
     onImported: () -> Unit
 ) {
     val context = LocalContext.current
-    val auth = remember { PoyaraAuth(context.applicationContext) }
+    val settings = remember { VoiceServerSettings(context.applicationContext) }
     val scope = rememberCoroutineScope()
-    var loggedIn by remember { mutableStateOf(auth.hasSession) }
-    var showLogin by remember { mutableStateOf(false) }
-    var loginBusy by remember { mutableStateOf(false) }
-    var loginError by remember { mutableStateOf("") }
+    var configured by remember { mutableStateOf(settings.configured) }
+    var showSettings by remember { mutableStateOf(false) }
     var errorText by remember { mutableStateOf("") }
     var review by remember { mutableStateOf<VoiceReview?>(null) }
     var importing by remember { mutableStateOf(false) }
@@ -75,25 +72,15 @@ internal fun VoiceAgentPanel(
             Row(Modifier.fillMaxWidth()) {
                 Text("دستیار صوتی پویارا", fontWeight = FontWeight.Bold,
                     modifier = Modifier.weight(1f))
-                TextButton(onClick = {
-                    if (loggedIn) {
-                        auth.logout()
-                        loggedIn = false
-                    } else showLogin = true
-                }) { Text(if (loggedIn) "خروج" else "ورود با ایمیل") }
+                TextButton(onClick = { showSettings = true }) {
+                    Text(if (configured) "تنظیم سرور" else "اتصال به سرور")
+                }
             }
-            Text(
-                if (loggedIn)
-                    "ویس‌ها پس از اتصال اینترنت خودکار تحلیل می‌شوند؛ قبل از ثبت نتیجه را بررسی کن."
-                else "ویس حتی بدون اینترنت ذخیره می‌شود. برای پردازش خودکار با ایمیل وارد شو.",
+            Text(if (configured)
+                    "ویس‌ها پس از وصل اینترنت ارسال و روی سرور تحلیل می‌شوند."
+                else "ویس‌ها روی گوشی می‌مانند. برای تحلیل، آدرس سرور را یک‌بار تنظیم کن.",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.secondary
-            )
-            if (loggedIn) {
-                Text("حساب: " + auth.email,
-                    color = MaterialTheme.colorScheme.primary,
-                    style = MaterialTheme.typography.labelSmall)
-            }
+                color = MaterialTheme.colorScheme.secondary)
             if (audioPaths.isEmpty()) {
                 Text("هنوز ویسی ضبط نکرده‌ای.",
                     style = MaterialTheme.typography.bodySmall)
@@ -104,16 +91,27 @@ internal fun VoiceAgentPanel(
                 val status = when {
                     existing?.applied == true -> "✓ ثبت شده"
                     existing != null -> "آماده تأیید"
-                    upload?.status == "uploading" -> "در حال تحلیل و ارسال..."
+                    upload?.status == "uploading" -> upload.lastError.ifBlank { "در حال ارسال..." }
                     upload?.status == "retry" -> "ارسال دوباره پس از اتصال / رفع خطای سرور"
                     upload?.status == "failed" -> "ارسال ناموفق"
-                    !loggedIn -> "ذخیره روی گوشی؛ منتظر ورود"
+                    !configured -> "روی گوشی ذخیره شده؛ سرور هنوز تنظیم نشده"
                     else -> "در صف ارسال خودکار"
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Column(Modifier.weight(1f)) {
                         Text("ویس " + (index + 1), fontWeight = FontWeight.SemiBold)
                         Text(status, style = MaterialTheme.typography.bodySmall)
+                        val percent = if (upload?.status == "uploading")
+                            Regex("ارسال فایل: (\\d+)٪").find(upload.lastError)?.groupValues?.get(1)?.toIntOrNull()
+                            else null
+                        if (percent != null) {
+                            LinearProgressIndicator(
+                                progress = { percent / 100f },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        } else if (upload?.status == "uploading") {
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        }
                         if ((upload?.status == "failed" || upload?.status == "retry") &&
                             upload.lastError.isNotBlank()) {
                             Text(upload.lastError, style = MaterialTheme.typography.labelSmall,
@@ -124,12 +122,12 @@ internal fun VoiceAgentPanel(
                         Button(onClick = { review = existing }) { Text("بازبینی") }
                     } else if (upload?.status == "failed") {
                         OutlinedButton(onClick = {
-                            if (loggedIn) VoiceQueue.retry(context, path)
-                            else showLogin = true
+                            if (configured) VoiceQueue.retry(context, path)
+                            else showSettings = true
                             refreshTick++
                         }) { Text("تلاش مجدد") }
-                    } else if (!loggedIn) {
-                        OutlinedButton(onClick = { showLogin = true }) { Text("ورود") }
+                    } else if (!configured) {
+                        OutlinedButton(onClick = { showSettings = true }) { Text("تنظیم") }
                     }
                 }
                 HorizontalDivider()
@@ -141,60 +139,40 @@ internal fun VoiceAgentPanel(
         }
     }
 
-    if (showLogin) {
-        var email by remember { mutableStateOf(auth.email) }
-        var password by remember { mutableStateOf("") }
-        var registering by remember { mutableStateOf(false) }
+    if (showSettings) {
+        var url by remember { mutableStateOf(settings.endpoint) }
+        var pairingCode by remember { mutableStateOf("") }
+        var configError by remember { mutableStateOf("") }
         AlertDialog(
-            onDismissRequest = { if (!loginBusy) showLogin = false },
-            title = { Text(if (registering) "ساخت حساب پویارا" else "ورود به پویارا") },
+            onDismissRequest = { showSettings = false },
+            title = { Text("اتصال دستیار صوتی به سرور") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("ورود روی این گوشی به‌طور امن حفظ می‌شود تا ویس‌های آفلاین خودکار ارسال شوند.",
+                    Text("بدون ثبت‌نام یا ایمیل؛ آدرس HTTPS و کد اتصال یک‌بار ثبت می‌شود.",
                         style = MaterialTheme.typography.bodySmall)
-                    OutlinedTextField(value = email, onValueChange = { email = it },
-                        label = { Text("ایمیل") }, singleLine = true,
+                    OutlinedTextField(value = url, onValueChange = { url = it },
+                        label = { Text("آدرس سرور HTTPS") }, singleLine = true,
                         modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(value = password, onValueChange = { password = it },
-                        label = { Text("رمز عبور") }, singleLine = true,
-                        visualTransformation = PasswordVisualTransformation(),
+                    OutlinedTextField(value = pairingCode, onValueChange = { pairingCode = it },
+                        label = { Text("کد اتصال دستگاه") }, singleLine = true,
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
                         modifier = Modifier.fillMaxWidth())
-                    TextButton(onClick = { registering = !registering }) {
-                        Text(if (registering) "حساب دارم؛ ورود" else "حساب ندارم؛ ثبت نام")
-                    }
-                    if (loginError.isNotBlank()) {
-                        Text(loginError, color = MaterialTheme.colorScheme.error,
-                            style = MaterialTheme.typography.bodySmall)
-                    }
+                    if (configError.isNotBlank())
+                        Text(configError, color = MaterialTheme.colorScheme.error)
                 }
             },
             confirmButton = {
-                Button(enabled = !loginBusy, onClick = {
-                    loginBusy = true
-                    loginError = ""
-                    scope.launch {
-                        try {
-                            val success = withContext(Dispatchers.IO) {
-                                if (registering) auth.signUp(email, password)
-                                else { auth.signIn(email, password); true }
-                            }
-                            if (success) {
-                                loggedIn = auth.hasSession
-                                showLogin = false
-                                VoiceQueue.schedulePending(context)
-                            } else {
-                                loginError = "ایمیل تأیید حساب را بررسی کن؛ سپس وارد شو."
-                            }
-                        } catch (error: Exception) {
-                            loginError = error.localizedMessage ?: "خطا در ورود"
-                        } finally { loginBusy = false }
-                    }
-                }) { Text(if (loginBusy) "در حال اتصال..." else if (registering) "ثبت‌نام" else "ورود") }
+                Button(onClick = {
+                    try {
+                        settings.save(url,pairingCode)
+                        configured = true
+                        showSettings = false
+                        VoiceQueue.schedulePending(context)
+                    } catch (e: Exception) { configError = e.localizedMessage ?: "تنظیم نامعتبر" }
+                }) { Text("ذخیره اتصال") }
             },
             dismissButton = {
-                TextButton(enabled = !loginBusy, onClick = { showLogin = false }) {
-                    Text("انصراف")
-                }
+                TextButton(onClick = { showSettings = false }) { Text("انصراف") }
             }
         )
     }
