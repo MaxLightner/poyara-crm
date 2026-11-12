@@ -4,7 +4,7 @@ const API_KEY=Deno.env.get("SUPABASE_ANON_KEY")??"";
 const OPENAI_KEY=Deno.env.get("OPENAI_API_KEY")??"";
 const HEADERS={"Content-Type":"application/json"};
 const transcriptModel="gpt-transcribe";
-const extractionModel=Deno.env.get("POYARA_EXTRACTION_MODEL")??"gpt-5-mini";
+const extractionModel=Deno.env.get("POYARA_EXTRACTION_MODEL")??"gpt-6-luna";
 
 const contactProps=Object.fromEntries(["name","phone","company","role","address","note","related_to"].map(
   key=>[key,{type:["string","null"]}]
