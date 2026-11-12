@@ -50,7 +50,6 @@ def init():
         jobs = connection.execute("SELECT job_id FROM jobs WHERE status='queued'").fetchall()
     for row in jobs:
         pool.submit(process_job, row["job_id"])
-init()
 
 def authorize(value: str | None):
     if len(TOKEN) < 32:
@@ -150,6 +149,8 @@ def process_job(job_id):
         # Original file remains on the phone. Remove server's temporary copy.
         try: Path(job["audio_path"]).unlink(missing_ok=True)
         except OSError: pass
+
+init()
 
 @app.get("/health")
 def health():
