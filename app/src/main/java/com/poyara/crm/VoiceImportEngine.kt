@@ -45,6 +45,7 @@ internal object VoiceImportEngine {
         val result = JSONObject(review.resultJson)
         val people = result.optJSONArray("contacts")
         val plans = result.optJSONArray("reminders")
+        val observations = result.optJSONArray("observations")
         val warnings = mutableListOf<String>()
         val scheduled = mutableListOf<WorkReminder>()
         var created = 0
@@ -66,7 +67,12 @@ internal object VoiceImportEngine {
                 }
             }
 
-            for (index in 0 until (people?.length() ?: 0)) {
+            val orderedPeople = (0 until (people?.length() ?: 0)).sortedBy { index ->
+                val role = people?.optJSONObject(index)?.optString("role", "").orEmpty()
+                if (listOf("مدیر", "مالک", "صاحب", "manager", "owner")
+                        .any { role.contains(it, ignoreCase = true) }) 0 else 1
+            }
+            for (index in orderedPeople) {
                 val person = people!!.optJSONObject(index) ?: continue
                 val name = field(person, "name")
                 val number = field(person, "phone")
@@ -75,6 +81,16 @@ internal object VoiceImportEngine {
                 val role = field(person, "role")
                 val address = field(person, "address")
                 val detail = field(person, "note")
+                val tagAllowlist = setOf(
+                    "مبلمان", "کابینت", "معماری", "پیگیری", "مشتری ثابت", "مهم"
+                )
+                val parsedTags = mutableSetOf<String>()
+                person.optJSONArray("tags")?.let { tags ->
+                    for (j in 0 until tags.length()) {
+                        val tag = tags.optString(j).trim()
+                        if (tag in tagAllowlist) parsedTags += tag
+                    }
+                }
                 if (name.isBlank() && number.isBlank()) {
                     warnings += "رکورد " + (index + 1) + " بدون نام و شماره بود و وارد نشد."
                     continue
@@ -110,7 +126,7 @@ internal object VoiceImportEngine {
                     name.ifBlank { previous?.name.orEmpty() },
                     number.ifBlank { previous?.phone.orEmpty() },
                     mergedNote,
-                    previous?.tags ?: emptySet(),
+                    (previous?.tags ?: emptySet()) + parsedTags,
                     finalCompany,
                     if (previous != null) previous.groupId ?: groupRoot else groupRoot
                 )
@@ -122,6 +138,25 @@ internal object VoiceImportEngine {
                 }
                 nowPeople.clear()
                 nowPeople.addAll(db.all())
+            }
+
+            if ((observations?.length() ?: 0) > 0) {
+                val additional = buildList {
+                    for (i in 0 until observations!!.length()) {
+                        observations.optString(i).takeIf { it.isNotBlank() }?.let { add(it) }
+                    }
+                }.joinToString("\n")
+                val existingEntry = db.voiceUpload(review.audioPath)?.entryId ?: 0L
+                val contact = db.all().firstOrNull { it.id == existingEntry }
+                if (contact != null && additional.isNotBlank()) {
+                    db.save(
+                        contact.id, contact.name, contact.phone,
+                        addNote(contact.note, additional), contact.tags,
+                        contact.company, contact.groupId
+                    )
+                } else if (additional.isNotBlank()) {
+                    warnings += "نکات تکمیلی بدون مخاطب مشخص در متن ویس حفظ شدند؛ می‌توانی آن‌ها را بررسی کنی."
+                }
             }
 
             val dateParser = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).apply {
