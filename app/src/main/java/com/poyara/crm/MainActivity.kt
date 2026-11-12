@@ -165,7 +165,8 @@ private fun CrmHome(initialRecordId: Long) {
     }
     LaunchedEffect(Unit) {
         ReminderScheduler.createChannel(context)
-        VoiceQueue.schedulePending(context)
+        // Google transcription trial runs locally through the phone service; no server pairing.
+        androidx.work.WorkManager.getInstance(context).cancelAllWorkByTag("poyara_voice_upload")
         callerEnabled = if (Build.VERSION.SDK_INT >= 29) {
             roleManager?.isRoleHeld(RoleManager.ROLE_CALL_SCREENING) == true
         } else false
@@ -379,8 +380,8 @@ private fun CrmHome(initialRecordId: Long) {
             } else {
                 addDraftAttachment("audio", target)
             }
-            // Queue the preserved M4A immediately; WorkManager waits for internet.
-            VoiceQueue.record(context, target, recordId)
+            // Saved recording remains local for Google's post-recording transcription trial.
+            fileRevision++
         }
     }
 
@@ -587,7 +588,18 @@ private fun CrmHome(initialRecordId: Long) {
         mapLauncher.launch(
             Intent(context, OfflineMapActivity::class.java)
                 .putExtra("entry_id", entryId)
-                .putExtra("allow_pick_location", allowPick || entryId > 0L)
+                .putExtra("allow_pick_location", allowPick)
+                .apply {
+                    if (!allowPick) {
+                        val location = allEntries.firstOrNull { it.id == entryId }
+                        val lat = location?.latitude ?: draftLatitude
+                        val lon = location?.longitude ?: draftLongitude
+                        if (lat != null && lon != null) {
+                            putExtra("preview_latitude", lat)
+                            putExtra("preview_longitude", lon)
+                        }
+                    }
+                }
         )
     }
 
@@ -813,10 +825,19 @@ private fun CrmHome(initialRecordId: Long) {
                             else "هنوز موقعیت ثبت نشده؛ GPS یا لمس روی نقشه",
                             style = MaterialTheme.typography.bodySmall
                         )
-                        Button(
-                            onClick = { openMap(recordId, allowPick = true) }
-                        ) {
-                            Text("⌖ ثبت روی نقشه یا GPS")
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = { openMap(recordId, allowPick = true) }
+                            ) {
+                                Text("⌖ ثبت روی نقشه یا GPS")
+                            }
+                            val hasSavedPoint = (current?.latitude != null && current.longitude != null) ||
+                                (draftLatitude != null && draftLongitude != null)
+                            if (hasSavedPoint) {
+                                OutlinedButton(onClick = { openMap(recordId, allowPick = false) }) {
+                                    Text("مشاهده موقعیت")
+                                }
+                            }
                         }
                     }
                 }
@@ -834,8 +855,8 @@ private fun CrmHome(initialRecordId: Long) {
                     OutlinedButton(onClick = { takePhoto() }) { Text("📷 عکس فوری") }
                 }
 
-                VoiceAgentPanel(
-                    db = db,
+                VoiceGoogleTrialPanel(
+
                     audioPaths = files.filter { it.type == "audio" }.map { it.filePath } +
                         draftAttachments.mapNotNull { saved ->
                             val parts = saved.split("|", limit = 2)
