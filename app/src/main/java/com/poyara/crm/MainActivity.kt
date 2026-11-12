@@ -856,16 +856,18 @@ private fun CrmHome(initialRecordId: Long) {
                 }
 
                 VoiceGoogleTrialPanel(
-
                     audioPaths = files.filter { it.type == "audio" }.map { it.filePath } +
                         draftAttachments.mapNotNull { saved ->
                             val parts = saved.split("|", limit = 2)
                             if (parts.size == 2 && parts[0] == "audio") parts[1] else null
                         },
-                    // Never upload unrelated customer records to the AI service.
-                    // Matching is performed locally after the transcript is returned.
-                    contacts = allEntries.filter { it.id == recordId },
-                    onImported = { refresh() }
+                    onTranscribed = { result ->
+                        val updated = listOf(note.trim(), "متن ویس: " + result.trim())
+                            .filter { it.isNotBlank() }.joinToString("\n\n")
+                        note = updated
+                        save(newNote = updated)
+                        persistDraft(newNote = updated)
+                    }
                 )
 
                 if (files.isNotEmpty()) {
@@ -1203,6 +1205,11 @@ private fun CrmHome(initialRecordId: Long) {
                                         },
                                         enabled = entry.phone.isNotBlank()
                                     ) { Text("✉ پیامک") }
+                                    if (entry.latitude != null && entry.longitude != null) {
+                                        TextButton(onClick = { openMap(entry.id, allowPick = false) }) {
+                                            Text("⌖ موقعیت")
+                                        }
+                                    }
                                     TextButton(onClick = { open(entry) }) { Text("پرونده") }
                                 }
                             }
