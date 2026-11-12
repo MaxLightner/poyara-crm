@@ -218,6 +218,7 @@ private fun CrmHome(initialRecordId: Long) {
             val parts = encoded.split("|", limit = 2)
             if (parts.size == 2 && File(parts[1]).isFile) {
                 db.addAttachment(id, parts[0], parts[1])
+                if (parts[0] == "audio") db.linkVoiceUploadToEntry(parts[1], id)
             }
         }
         if (draftLatitude != null && draftLongitude != null) {
