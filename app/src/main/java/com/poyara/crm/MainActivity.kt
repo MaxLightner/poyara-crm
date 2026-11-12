@@ -844,7 +844,14 @@ private fun CrmHome(initialRecordId: Long) {
                     // Never upload unrelated customer records to the AI service.
                     // Matching is performed locally after the transcript is returned.
                     contacts = allEntries.filter { it.id == recordId },
-                    onImported = { refresh() }
+                    onImported = { refresh() },
+                    onTranscribed = { transcript ->
+                        val updated = listOf(note, transcript)
+                            .filter { it.isNotBlank() }.joinToString("\n")
+                        note = updated
+                        save(newNote = updated)
+                        Toast.makeText(context, "متن به یادداشت افزوده شد", Toast.LENGTH_SHORT).show()
+                    }
                 )
 
                 if (files.isNotEmpty()) {
