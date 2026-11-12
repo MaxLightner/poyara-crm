@@ -165,7 +165,8 @@ private fun CrmHome(initialRecordId: Long) {
     }
     LaunchedEffect(Unit) {
         ReminderScheduler.createChannel(context)
-        VoiceQueue.schedulePending(context)
+        // Local Google speech experiment: do not start the paid/self-hosted sync queue.
+        androidx.work.WorkManager.getInstance(context).cancelAllWorkByTag("poyara_voice_upload")
         callerEnabled = if (Build.VERSION.SDK_INT >= 29) {
             roleManager?.isRoleHeld(RoleManager.ROLE_CALL_SCREENING) == true
         } else false
@@ -379,8 +380,8 @@ private fun CrmHome(initialRecordId: Long) {
             } else {
                 addDraftAttachment("audio", target)
             }
-            // Queue the preserved M4A immediately; WorkManager waits for internet.
-            VoiceQueue.record(context, target, recordId)
+            // Retain the original M4A for post-recording Google recognition.
+            fileRevision++
         }
     }
 
@@ -587,7 +588,18 @@ private fun CrmHome(initialRecordId: Long) {
         mapLauncher.launch(
             Intent(context, OfflineMapActivity::class.java)
                 .putExtra("entry_id", entryId)
-                .putExtra("allow_pick_location", allowPick || entryId > 0L)
+                .putExtra("allow_pick_location", allowPick)
+                .apply {
+                    if (!allowPick) {
+                        val saved = allEntries.firstOrNull { it.id == entryId }
+                        val lat = saved?.latitude ?: draftLatitude
+                        val lon = saved?.longitude ?: draftLongitude
+                        if (lat != null && lon != null) {
+                            putExtra("preview_latitude", lat)
+                            putExtra("preview_longitude", lon)
+                        }
+                    }
+                }
         )
     }
 
@@ -813,10 +825,17 @@ private fun CrmHome(initialRecordId: Long) {
                             else "هنوز موقعیت ثبت نشده؛ GPS یا لمس روی نقشه",
                             style = MaterialTheme.typography.bodySmall
                         )
-                        Button(
-                            onClick = { openMap(recordId, allowPick = true) }
-                        ) {
-                            Text("⌖ ثبت روی نقشه یا GPS")
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Button(onClick = { openMap(recordId, allowPick = true) }) {
+                                Text("⌖ ثبت روی نقشه یا GPS")
+                            }
+                            val savedPointExists = (current?.latitude != null && current.longitude != null) ||
+                                (draftLatitude != null && draftLongitude != null)
+                            if (savedPointExists) {
+                                OutlinedButton(onClick = { openMap(recordId, allowPick = false) }) {
+                                    Text("مشاهده مکان ذخیره‌شده")
+                                }
+                            }
                         }
                     }
                 }
@@ -834,17 +853,12 @@ private fun CrmHome(initialRecordId: Long) {
                     OutlinedButton(onClick = { takePhoto() }) { Text("📷 عکس فوری") }
                 }
 
-                VoiceAgentPanel(
-                    db = db,
+                VoiceGoogleTrialPanel(
                     audioPaths = files.filter { it.type == "audio" }.map { it.filePath } +
                         draftAttachments.mapNotNull { saved ->
                             val parts = saved.split("|", limit = 2)
                             if (parts.size == 2 && parts[0] == "audio") parts[1] else null
                         },
-                    // Never upload unrelated customer records to the AI service.
-                    // Matching is performed locally after the transcript is returned.
-                    contacts = allEntries.filter { it.id == recordId },
-                    onImported = { refresh() },
                     onTranscribed = { transcript ->
                         val updated = listOf(note, transcript)
                             .filter { it.isNotBlank() }.joinToString("\n")
@@ -1189,6 +1203,11 @@ private fun CrmHome(initialRecordId: Long) {
                                         },
                                         enabled = entry.phone.isNotBlank()
                                     ) { Text("✉ پیامک") }
+                                    if (entry.latitude != null && entry.longitude != null) {
+                                        TextButton(onClick = { openMap(entry.id, allowPick = false) }) {
+                                            Text("⌖ موقعیت")
+                                        }
+                                    }
                                     TextButton(onClick = { open(entry) }) { Text("پرونده") }
                                 }
                             }
