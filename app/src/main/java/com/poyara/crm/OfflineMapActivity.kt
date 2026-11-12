@@ -57,6 +57,7 @@ class OfflineMapActivity : ComponentActivity() {
     private var userPin: Marker? = null
     private var selectedEntryId = 0L
     private var allowPick = false
+    private var previewOnly = false
     private var currentTag = "همه"
     private var radiusMeters = 2000
     private var nearbyOrigin: Location? = null
@@ -101,6 +102,7 @@ class OfflineMapActivity : ComponentActivity() {
         db = CrmDb(applicationContext)
         selectedEntryId = intent.getLongExtra("entry_id", 0L)
         allowPick = intent.getBooleanExtra("allow_pick_location", false)
+        previewOnly = intent.getBooleanExtra("preview_only", false)
 
         // OSM public tiles: only user-visible tiles are fetched, with an identifying
         // User-Agent and copyright attribution. There is no offline bulk download.
@@ -124,17 +126,22 @@ class OfflineMapActivity : ComponentActivity() {
             it.latitude != null && it.longitude != null &&
                 (selectedEntryId == 0L || it.id == selectedEntryId)
         }
-        mapView.controller.setCenter(GeoPoint(
-            starting?.latitude ?: 36.2972, starting?.longitude ?: 59.6067
-        ))
+        val initialLat = if (intent.hasExtra("preview_latitude"))
+            intent.getDoubleExtra("preview_latitude", 36.2972) else starting?.latitude ?: 36.2972
+        val initialLon = if (intent.hasExtra("preview_longitude"))
+            intent.getDoubleExtra("preview_longitude", 59.6067) else starting?.longitude ?: 59.6067
+        mapView.controller.setCenter(GeoPoint(initialLat, initialLon))
+        if (starting != null || intent.hasExtra("preview_latitude")) mapView.controller.setZoom(17.0)
 
         showScreen()
-        enableMapTap()
+        if (!previewOnly) enableMapTap()
         showPins()
         updateStatus()
-        // Ask only for location permission if necessary; the map itself always opens.
-        locationAction = "center"
-        locateWithPermission()
+        // A contact preview must remain centered on the saved location, NOT GPS.
+        if (!previewOnly && starting == null && !intent.hasExtra("preview_latitude")) {
+            locationAction = "center"
+            locateWithPermission()
+        }
     }
 
     private fun showScreen() {
@@ -184,7 +191,7 @@ class OfflineMapActivity : ComponentActivity() {
             locationAction = "center"
             locateWithPermission()
         })
-        if (selectedEntryId > 0 || allowPick) {
+        if (!previewOnly && (selectedEntryId > 0 || allowPick)) {
             actions.addView(makeButton("ثبت GPS") {
                 locationAction = "save"
                 locateWithPermission()
@@ -244,6 +251,8 @@ class OfflineMapActivity : ComponentActivity() {
         if (fetchingLocation) return
         val count = visibleContacts().size
         status.text = when {
+            previewOnly ->
+                "موقعیت ثبت‌شده مشتری روی نقشه · برای تغییر موقعیت به پرونده برگرد"
             selectedEntryId > 0 || allowPick ->
                 "برای ثبت موقعیت، روی نقشه بزن یا «ثبت GPS» را انتخاب کن"
             nearbyOrigin != null ->
@@ -298,6 +307,7 @@ class OfflineMapActivity : ComponentActivity() {
     }
 
     private fun savePoint(latitude: Double, longitude: Double, source: String) {
+        if (previewOnly) return
         if (selectedEntryId > 0) db.setLocation(selectedEntryId, latitude, longitude, source)
         if (selectedEntryId <= 0 && !allowPick) return
         setResult(Activity.RESULT_OK, Intent().apply {
