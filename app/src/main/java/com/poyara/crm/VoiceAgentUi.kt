@@ -7,49 +7,24 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
-import java.util.UUID
 
-/**
- * One voice can contain several people, company relationships, roles, addresses
- * and meetings. User reviews the proposals before any database write.
- * Voice files remain on-device, including when analysis fails or network is off.
- */
+/** Display queued/processed audio and collect approval before importing. */
 @Composable
 internal fun VoiceAgentPanel(
     db: CrmDb,
@@ -58,146 +33,167 @@ internal fun VoiceAgentPanel(
     onImported: () -> Unit
 ) {
     val context = LocalContext.current
-    val client = remember { VoiceAgentClient(context.applicationContext) }
+    val auth = remember { PoyaraAuth(context.applicationContext) }
     val scope = rememberCoroutineScope()
+    var loggedIn by remember { mutableStateOf(auth.hasSession) }
+    var showLogin by remember { mutableStateOf(false) }
+    var loginBusy by remember { mutableStateOf(false) }
+    var loginError by remember { mutableStateOf("") }
+    var errorText by remember { mutableStateOf("") }
+    var review by remember { mutableStateOf<VoiceReview?>(null) }
+    var importing by remember { mutableStateOf(false) }
+    var refreshTick by remember { mutableIntStateOf(0) }
     val notificationPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (!granted) Toast.makeText(
-            context, "اعلان یادآوری برای اندروید غیرفعال است؛ از تنظیمات گوشی فعالش کن",
+            context, "برای اعلان یادآوری، اجازه اعلان‌ها را از تنظیمات گوشی فعال کن",
             Toast.LENGTH_LONG
         ).show()
     }
-    var showSettings by remember { mutableStateOf(false) }
-    var configured by remember { mutableStateOf(client.isConfigured) }
-    var busyPath by remember { mutableStateOf<String?>(null) }
-    var errorText by remember { mutableStateOf("") }
-    var review by remember { mutableStateOf<VoiceReview?>(null) }
-    var importing by remember { mutableStateOf(false) }
 
-    if (audioPaths.isEmpty()) {
-        Text(
-            "برای ثبت اطلاعات با صدا، ابتدا یک ویس ضبط کن.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.secondary
-        )
-    } else {
-        Card {
-            Column(
-                Modifier.fillMaxWidth().padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(9.dp)
-            ) {
-                Row {
-                    Text("دستیار صوتی پویارا", fontWeight = FontWeight.Bold,
-                        modifier = Modifier.weight(1f))
-                    TextButton(onClick = { showSettings = true }) { Text("تنظیم اتصال") }
+    LaunchedEffect(audioPaths) {
+        audioPaths.distinct().forEach { path ->
+            if (File(path).isFile) {
+                VoiceQueue.record(context, File(path), contacts.firstOrNull()?.id ?: 0L)
+            }
+        }
+    }
+    LaunchedEffect(Unit) {
+        VoiceQueue.schedulePending(context)
+        while (true) {
+            delay(2700L)
+            refreshTick++
+        }
+    }
+
+    Card {
+        Column(
+            Modifier.fillMaxWidth().padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(Modifier.fillMaxWidth()) {
+                Text("دستیار صوتی پویارا", fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f))
+                TextButton(onClick = {
+                    if (loggedIn) {
+                        auth.logout()
+                        loggedIn = false
+                    } else showLogin = true
+                }) { Text(if (loggedIn) "خروج" else "ورود با ایمیل") }
+            }
+            Text(
+                if (loggedIn)
+                    "ویس‌ها پس از اتصال اینترنت خودکار تحلیل می‌شوند؛ قبل از ثبت نتیجه را بررسی کن."
+                else "ویس حتی بدون اینترنت ذخیره می‌شود. برای پردازش خودکار با ایمیل وارد شو.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.secondary
+            )
+            if (loggedIn) {
+                Text("حساب: " + auth.email,
+                    color = MaterialTheme.colorScheme.primary,
+                    style = MaterialTheme.typography.labelSmall)
+            }
+            if (audioPaths.isEmpty()) {
+                Text("هنوز ویسی ضبط نکرده‌ای.",
+                    style = MaterialTheme.typography.bodySmall)
+            }
+            audioPaths.distinct().filter { File(it).isFile }.forEachIndexed { index, path ->
+                val existing = remember(path, refreshTick) { db.voiceReview(path) }
+                val upload = remember(path, refreshTick) { db.voiceUpload(path) }
+                val status = when {
+                    existing?.applied == true -> "✓ ثبت شده"
+                    existing != null -> "آماده تأیید"
+                    upload?.status == "uploading" -> "در حال تحلیل و ارسال..."
+                    upload?.status == "retry" -> "ارسال دوباره پس از اتصال / رفع خطای سرور"
+                    upload?.status == "failed" -> "ارسال ناموفق"
+                    !loggedIn -> "ذخیره روی گوشی؛ منتظر ورود"
+                    else -> "در صف ارسال خودکار"
                 }
-                Text(
-                    if (configured) "برای هر ویس، متن و اطلاعات استخراج‌شده را قبل از ثبت بررسی کن."
-                    else "برای پردازش صوت، آدرس HTTPS و کلید سرویس خصوصی خودت را تنظیم کن.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-                audioPaths.distinct().filter { File(it).isFile }.forEachIndexed { index, path ->
-                    val existing = remember(path, busyPath, review) { db.voiceReview(path) }
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(
-                            "ویس " + (index + 1) +
-                                when {
-                                    existing?.applied == true -> " · ثبت‌شده"
-                                    existing != null -> " · آماده بازبینی"
-                                    else -> ""
-                                },
-                            modifier = Modifier.weight(1f),
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                        OutlinedButton(
-                            enabled = busyPath == null && !importing,
-                            onClick = {
-                                when {
-                                    existing?.applied == true ->
-                                        Toast.makeText(context, "این ویس قبلاً ثبت شده", Toast.LENGTH_SHORT).show()
-                                    existing != null -> review = existing
-                                    !client.isConfigured -> showSettings = true
-                                    else -> {
-                                        errorText = ""
-                                        busyPath = path
-                                        scope.launch {
-                                            try {
-                                                val jobId = UUID.randomUUID().toString()
-                                                val result = withContext(Dispatchers.IO) {
-                                                    client.analyze(File(path), jobId, contacts)
-                                                }
-                                                withContext(Dispatchers.IO) {
-                                                    db.saveVoiceReview(jobId, path, result.toString())
-                                                }
-                                                review = db.voiceReview(path)
-                                            } catch (exception: Exception) {
-                                                errorText = exception.localizedMessage ?: "خطا در تحلیل صوت"
-                                            } finally {
-                                                busyPath = null
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        ) {
-                            if (busyPath == path) CircularProgressIndicator()
-                            else Text(
-                                when {
-                                    existing?.applied == true -> "✓ انجام شد"
-                                    existing != null -> "بازبینی"
-                                    else -> "تحلیل صوت"
-                                }
-                            )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Column(Modifier.weight(1f)) {
+                        Text("ویس " + (index + 1), fontWeight = FontWeight.SemiBold)
+                        Text(status, style = MaterialTheme.typography.bodySmall)
+                        if (upload?.status == "failed" && upload.lastError.isNotBlank()) {
+                            Text(upload.lastError, style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.error)
                         }
                     }
+                    if (existing != null && !existing.applied) {
+                        Button(onClick = { review = existing }) { Text("بازبینی") }
+                    } else if (upload?.status == "failed") {
+                        OutlinedButton(onClick = {
+                            if (loggedIn) VoiceQueue.retry(context, path)
+                            else showLogin = true
+                            refreshTick++
+                        }) { Text("تلاش مجدد") }
+                    } else if (!loggedIn) {
+                        OutlinedButton(onClick = { showLogin = true }) { Text("ورود") }
+                    }
                 }
-                if (errorText.isNotBlank()) {
-                    Text(errorText, color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodySmall)
-                    Text("فایل صوتی همچنان ذخیره است و می‌توانی دوباره تلاش کنی.",
-                        style = MaterialTheme.typography.labelSmall)
-                }
+                HorizontalDivider()
+            }
+            if (errorText.isNotBlank()) {
+                Text(errorText, style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error)
             }
         }
     }
 
-    if (showSettings) {
-        var url by remember { mutableStateOf(client.endpoint) }
-        var accessCode by remember { mutableStateOf("") }
-        var settingsError by remember { mutableStateOf("") }
+    if (showLogin) {
+        var email by remember { mutableStateOf(auth.email) }
+        var password by remember { mutableStateOf("") }
+        var registering by remember { mutableStateOf(false) }
         AlertDialog(
-            onDismissRequest = { showSettings = false },
-            title = { Text("اتصال به سرویس تحلیل صوت") },
+            onDismissRequest = { if (!loginBusy) showLogin = false },
+            title = { Text(if (registering) "ساخت حساب پویارا" else "ورود به پویارا") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(
-                        "کلید OpenAI را اینجا وارد نکن. فقط آدرس سرور پویارا و کلید اختصاصی پایلوت را وارد کن.",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    OutlinedTextField(value = url, onValueChange = { url = it },
-                        label = { Text("آدرس HTTPS سرور") },
-                        placeholder = { Text("https://voice.example.com") },
-                        singleLine = true, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(value = accessCode,
-                        onValueChange = { accessCode = it },
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("ورود روی این گوشی به‌طور امن حفظ می‌شود تا ویس‌های آفلاین خودکار ارسال شوند.",
+                        style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(value = email, onValueChange = { email = it },
+                        label = { Text("ایمیل") }, singleLine = true,
+                        modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = password, onValueChange = { password = it },
+                        label = { Text("رمز عبور") }, singleLine = true,
                         visualTransformation = PasswordVisualTransformation(),
-                        label = { Text("کلید دسترسی سرور (در صورت تغییر)") },
-                        singleLine = true, modifier = Modifier.fillMaxWidth())
-                    if (settingsError.isNotBlank()) {
-                        Text(settingsError, color = MaterialTheme.colorScheme.error)
+                        modifier = Modifier.fillMaxWidth())
+                    TextButton(onClick = { registering = !registering }) {
+                        Text(if (registering) "حساب دارم؛ ورود" else "حساب ندارم؛ ثبت نام")
+                    }
+                    if (loginError.isNotBlank()) {
+                        Text(loginError, color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall)
                     }
                 }
             },
             confirmButton = {
-                TextButton(onClick = {
-                    runCatching { client.saveSettings(url, accessCode) }
-                        .onSuccess { configured = client.isConfigured; showSettings = false }
-                        .onFailure { settingsError = it.message ?: "تنظیمات نامعتبر است" }
-                }) { Text("ذخیره اتصال") }
+                Button(enabled = !loginBusy, onClick = {
+                    loginBusy = true
+                    loginError = ""
+                    scope.launch {
+                        try {
+                            val success = withContext(Dispatchers.IO) {
+                                if (registering) auth.signUp(email, password)
+                                else { auth.signIn(email, password); true }
+                            }
+                            if (success) {
+                                loggedIn = auth.hasSession
+                                showLogin = false
+                                VoiceQueue.schedulePending(context)
+                            } else {
+                                loginError = "ایمیل تأیید حساب را بررسی کن؛ سپس وارد شو."
+                            }
+                        } catch (error: Exception) {
+                            loginError = error.localizedMessage ?: "خطا در ورود"
+                        } finally { loginBusy = false }
+                    }
+                }) { Text(if (loginBusy) "در حال اتصال..." else if (registering) "ثبت‌نام" else "ورود") }
             },
             dismissButton = {
-                TextButton(onClick = { showSettings = false }) { Text("انصراف") }
+                TextButton(enabled = !loginBusy, onClick = { showLogin = false }) {
+                    Text("انصراف")
+                }
             }
         )
     }
