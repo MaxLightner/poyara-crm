@@ -16,6 +16,8 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
+import kotlinx.coroutines.delay
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -151,6 +153,16 @@ private fun CrmHome(initialRecordId: Long) {
     var recorder by remember { mutableStateOf<MediaRecorder?>(null) }
     var audioFile by remember { mutableStateOf<File?>(null) }
     var isRecording by remember { mutableStateOf(false) }
+    var recordingStartedAt by remember { mutableLongStateOf(0L) }
+    var recordingClock by remember { mutableLongStateOf(0L) }
+    var recordingError by remember { mutableStateOf("") }
+    var pendingAutoTranscription by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(isRecording) {
+        while (isRecording) {
+            recordingClock = SystemClock.elapsedRealtime()
+            delay(250)
+        }
+    }
     var additionalNotes by remember { mutableStateOf(startupEntry?.let { db.notes(it.id) } ?: emptyList()) }
     var noteDraft by remember { mutableStateOf("") }
     var editingNoteId by remember { mutableLongStateOf(0L) }
@@ -335,57 +347,88 @@ private fun CrmHome(initialRecordId: Long) {
     }
 
     fun beginRecording() {
+        if (isRecording) return
+        recordingError = ""
+        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            recordingError = "اجازه استفاده از میکروفون داده نشده است."
+            return
+        }
         val folder = File(context.filesDir, "attachments").apply { mkdirs() }
         val owner = if (recordId > 0L) recordId.toString() else "draft"
         val target = File(folder, "voice_${owner}_${System.currentTimeMillis()}.m4a")
+        var candidate: MediaRecorder? = null
         try {
-            val r = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            candidate = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 MediaRecorder(context)
             } else {
                 @Suppress("DEPRECATION")
                 MediaRecorder()
             }
-            r.setAudioSource(MediaRecorder.AudioSource.MIC)
-            r.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            r.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            r.setOutputFile(target.absolutePath)
-            r.prepare()
-            r.start()
-            recorder = r
+            candidate.setAudioSource(MediaRecorder.AudioSource.MIC)
+            candidate.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            candidate.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            candidate.setAudioChannels(1)
+            candidate.setAudioSamplingRate(16_000)
+            candidate.setAudioEncodingBitRate(48_000)
+            candidate.setOutputFile(target.absolutePath)
+            candidate.prepare()
+            candidate.start()
+            recorder = candidate
             audioFile = target
             isRecording = true
+            recordingStartedAt = SystemClock.elapsedRealtime()
+            recordingClock = recordingStartedAt
         } catch (error: Exception) {
-            recorder?.release()
+            runCatching { candidate?.reset() }
+            runCatching { candidate?.release() }
             recorder = null
+            audioFile = null
+            isRecording = false
             target.delete()
-            Toast.makeText(context, "ضبط شروع نشد: ${error.localizedMessage}", Toast.LENGTH_SHORT).show()
+            recordingError = "ضبط شروع نشد: " + (error.localizedMessage ?: "میکروفون در دسترس نیست")
+            Toast.makeText(context, recordingError, Toast.LENGTH_LONG).show()
         }
     }
 
     fun stopRecording() {
-        val r = recorder ?: return
+        val r = recorder ?: run {
+            isRecording = false
+            recordingError = "ضبطی در حال انجام نیست."
+            return
+        }
         val target = audioFile
-        var succeeded = false
+        var success = false
         try {
             r.stop()
-            succeeded = true
-        } catch (_: Exception) {
-            target?.delete()
+            success = true
+        } catch (error: Exception) {
+            recordingError = "ضبط کامل نشد؛ حداقل دو ثانیه صحبت کن و دوباره امتحان کن."
+            Toast.makeText(context, recordingError, Toast.LENGTH_LONG).show()
         } finally {
-            r.release()
+            runCatching { r.release() }
             recorder = null
             audioFile = null
             isRecording = false
         }
-        if (succeeded && target != null) {
+        if (!success || target == null || !target.isFile || target.length() < 256L) {
+            target?.delete()
+            if (recordingError.isBlank()) recordingError = "فایل صوتی خالی است. دوباره ضبط کن."
+            return
+        }
+        try {
             if (recordId > 0L) {
                 db.addAttachment(recordId, "audio", target.absolutePath)
                 refresh()
             } else {
                 addDraftAttachment("audio", target)
             }
-            // File remains on this device; no server upload is scheduled.
-            Toast.makeText(context, "ویس ذخیره شد؛ حالا «تبدیل به متن» را بزن", Toast.LENGTH_SHORT).show()
+            // No network access: the original M4A stays in the app's private storage.
+            // Child panel starts file transcription automatically after the recording stops.
+            pendingAutoTranscription = target.absolutePath
+        } catch (error: Exception) {
+            recordingError = "صدا ذخیره شد، اما اتصال به پرونده کامل نشد: " +
+                (error.localizedMessage ?: "خطا")
+            Toast.makeText(context, recordingError, Toast.LENGTH_LONG).show()
         }
     }
 
@@ -393,7 +436,10 @@ private fun CrmHome(initialRecordId: Long) {
         ActivityResultContracts.RequestPermission()
     ) { allowed ->
         if (allowed) beginRecording()
-        else Toast.makeText(context, "برای ضبط صدا دسترسی میکروفون لازم است.", Toast.LENGTH_SHORT).show()
+        else {
+            recordingError = "برای ضبط صدا، مجوز میکروفون را در تنظیمات گوشی فعال کن."
+            Toast.makeText(context, recordingError, Toast.LENGTH_LONG).show()
+        }
     }
 
     val cameraLauncher = rememberLauncherForActivityResult(
@@ -688,6 +734,54 @@ private fun CrmHome(initialRecordId: Long) {
                 Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                Card(colors = CardDefaults.cardColors(
+                    containerColor = if (isRecording) Color(0xFFFFF0EC) else Color(0xFFE3F3EF)
+                )) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            if (isRecording) "● ضبط فعال است — راحت و بدون دیدن متن صحبت کن"
+                            else "ضبط صوت مشتری",
+                            fontWeight = FontWeight.Bold,
+                            color = if (isRecording) Color(0xFF9C2929) else Color(0xFF08685F)
+                        )
+                        if (isRecording) {
+                            val seconds = ((recordingClock - recordingStartedAt) / 1000L).coerceAtLeast(0L)
+                            Text("%02d:%02d".format(seconds / 60L, seconds % 60L),
+                                style = MaterialTheme.typography.headlineMedium,
+                                fontWeight = FontWeight.Bold)
+                        } else {
+                            Text("بعد از پایان ضبط، تبدیل به متن خودکار آغاز می‌شود.",
+                                style = MaterialTheme.typography.bodySmall)
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = {
+                                    if (isRecording) stopRecording()
+                                    else if (context.checkSelfPermission(
+                                        Manifest.permission.RECORD_AUDIO
+                                    ) == PackageManager.PERMISSION_GRANTED) beginRecording()
+                                    else {
+                                        recordingError = "درخواست مجوز میکروفون…"
+                                        permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                    }
+                                },
+                                modifier = Modifier.weight(1f),
+                                colors = if (isRecording) ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFFB42626)
+                                ) else ButtonDefaults.buttonColors()
+                            ) { Text(if (isRecording) "■ پایان ضبط" else "● شروع ضبط صوت") }
+                            OutlinedButton(
+                                onClick = { takePhoto() },
+                                enabled = !isRecording
+                            ) { Text("📷 عکس") }
+                        }
+                        if (recordingError.isNotBlank()) {
+                            Text(recordingError, color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
                 OutlinedTextField(
                     value = personName,
                     onValueChange = {
@@ -850,20 +944,11 @@ private fun CrmHome(initialRecordId: Long) {
                     }
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = {
-                            if (isRecording) stopRecording()
-                            else permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                        },
-                        colors = if (isRecording) ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.error
-                        ) else ButtonDefaults.buttonColors()
-                    ) { Text(if (isRecording) "■ پایان ضبط" else "● ضبط صوت") }
-                    OutlinedButton(onClick = { takePhoto() }) { Text("📷 عکس فوری") }
-                }
-
                 VoiceAgentPanel(
+                    autoTranscribePath = pendingAutoTranscription,
+                    onAutoConsumed = { consumed ->
+                        if (pendingAutoTranscription == consumed) pendingAutoTranscription = null
+                    },
                     audioPaths = files.filter { it.type == "audio" }.map { it.filePath } +
                         draftAttachments.mapNotNull { encoded ->
                             val parts = encoded.split("|", limit = 2)
