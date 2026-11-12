@@ -114,7 +114,8 @@ internal fun VoiceAgentPanel(
                     Column(Modifier.weight(1f)) {
                         Text("ویس " + (index + 1), fontWeight = FontWeight.SemiBold)
                         Text(status, style = MaterialTheme.typography.bodySmall)
-                        if (upload?.status == "failed" && upload.lastError.isNotBlank()) {
+                        if ((upload?.status == "failed" || upload?.status == "retry") &&
+                            upload.lastError.isNotBlank()) {
                             Text(upload.lastError, style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.error)
                         }
