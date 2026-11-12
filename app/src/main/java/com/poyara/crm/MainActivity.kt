@@ -165,6 +165,7 @@ private fun CrmHome(initialRecordId: Long) {
     }
     LaunchedEffect(Unit) {
         ReminderScheduler.createChannel(context)
+        VoiceQueue.schedulePending(context)
         callerEnabled = if (Build.VERSION.SDK_INT >= 29) {
             roleManager?.isRoleHeld(RoleManager.ROLE_CALL_SCREENING) == true
         } else false
@@ -377,6 +378,8 @@ private fun CrmHome(initialRecordId: Long) {
             } else {
                 addDraftAttachment("audio", target)
             }
+            // Queue the preserved M4A immediately; WorkManager waits for internet.
+            VoiceQueue.record(context, target, recordId)
         }
     }
 
