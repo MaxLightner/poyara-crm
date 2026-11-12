@@ -286,6 +286,8 @@ private fun CrmHome(initialRecordId: Long) {
         phone = entry.phone
         note = entry.note
         chosenTags = entry.tags
+        draftLatitude = entry.latitude
+        draftLongitude = entry.longitude
         additionalNotes = db.notes(entry.id)
         noteDraft = ""
         editingNoteId = 0L
@@ -583,12 +585,19 @@ private fun CrmHome(initialRecordId: Long) {
         refresh()
     }
 
-    fun openMap(entryId: Long, allowPick: Boolean = false) {
-        mapLauncher.launch(
-            Intent(context, OfflineMapActivity::class.java)
-                .putExtra("entry_id", entryId)
-                .putExtra("allow_pick_location", allowPick || entryId > 0L)
-        )
+    fun openMap(entryId: Long, allowPick: Boolean = false, previewOnly: Boolean = false) {
+        val saved = allEntries.firstOrNull { it.id == entryId }
+        val lat = saved?.latitude ?: draftLatitude
+        val lon = saved?.longitude ?: draftLongitude
+        val target = Intent(context, OfflineMapActivity::class.java)
+            .putExtra("entry_id", entryId)
+            .putExtra("allow_pick_location", allowPick)
+            .putExtra("preview_only", previewOnly)
+        if (lat != null && lon != null) {
+            target.putExtra("preview_latitude", lat)
+            target.putExtra("preview_longitude", lon)
+        }
+        mapLauncher.launch(target)
     }
 
     val files = remember(recordId, fileRevision) {
@@ -813,10 +822,27 @@ private fun CrmHome(initialRecordId: Long) {
                             else "هنوز موقعیت ثبت نشده؛ GPS یا لمس روی نقشه",
                             style = MaterialTheme.typography.bodySmall
                         )
+                        val showLatitude = current?.latitude ?: draftLatitude
+                        val showLongitude = current?.longitude ?: draftLongitude
+                        if (showLatitude != null && showLongitude != null) {
+                            ContactMapPreview(
+                                latitude = showLatitude,
+                                longitude = showLongitude,
+                                title = personName.ifBlank { companyName.ifBlank { "موقعیت مشتری" } }
+                            )
+                            Text(
+                                if (current?.latitude != null) "پیش‌نمایش موقعیت ذخیره‌شده"
+                                else "پیش‌نمایش موقعیت انتخاب‌شده؛ با ثبت پرونده ذخیره می‌شود",
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                            OutlinedButton(
+                                onClick = { openMap(recordId, previewOnly = true) }
+                            ) { Text("📍 مشاهده موقعیت روی نقشه بزرگ") }
+                        }
                         Button(
                             onClick = { openMap(recordId, allowPick = true) }
                         ) {
-                            Text("⌖ ثبت روی نقشه یا GPS")
+                            Text(if (showLatitude != null) "⌖ تغییر موقعیت ثبت‌شده" else "⌖ ثبت روی نقشه یا GPS")
                         }
                     }
                 }
@@ -1189,6 +1215,11 @@ private fun CrmHome(initialRecordId: Long) {
                                         },
                                         enabled = entry.phone.isNotBlank()
                                     ) { Text("✉ پیامک") }
+                                    if (entry.latitude != null && entry.longitude != null) {
+                                        TextButton(onClick = {
+                                            openMap(entry.id, previewOnly = true)
+                                        }) { Text("📍 نقشه") }
+                                    }
                                     TextButton(onClick = { open(entry) }) { Text("پرونده") }
                                 }
                             }
