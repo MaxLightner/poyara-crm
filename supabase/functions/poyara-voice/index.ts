@@ -9,6 +9,7 @@ const extractionModel=Deno.env.get("POYARA_EXTRACTION_MODEL")??"gpt-5-mini";
 const contactProps=Object.fromEntries(["name","phone","company","role","address","note","related_to"].map(
   key=>[key,{type:["string","null"]}]
 ));
+contactProps.tags={type:"array",items:{type:"string"}};
 const reminderProps={
   person_name:{type:["string","null"]},company:{type:["string","null"]},
   title:{type:"string"},date_iso:{type:["string","null"]},
@@ -20,8 +21,9 @@ const SCHEMA={type:"object",properties:{
     required:Object.keys(contactProps),additionalProperties:false}},
   reminders:{type:"array",items:{type:"object",properties:reminderProps,
     required:Object.keys(reminderProps),additionalProperties:false}},
-  questions:{type:"array",items:{type:"string"}}
-},required:["contacts","reminders","questions"],additionalProperties:false};
+  questions:{type:"array",items:{type:"string"}},
+  observations:{type:"array",items:{type:"string"}}
+},required:["contacts","reminders","questions","observations"],additionalProperties:false};
 
 function reply(status:number,obj:unknown):Response{
  return new Response(JSON.stringify(obj),{status,headers:HEADERS});
@@ -104,6 +106,8 @@ Deno.serve(async(req:Request):Promise<Response>=>{
    "The user may narrate people, business names, manager/employee relationships, addresses, phone numbers, context, calls, follow-up actions and meetings informally and out of order.",
    "Identify every distinct person mentioned. For an employee identified as part of the same shop, assign the business only when speech context clearly supports it.",
    "Capture non-field details in the note field in Persian, without losing useful information. Preserve role, address, phone and company separately where stated.",
+   "Return tags as an array using only: مبلمان، کابینت، معماری، پیگیری، مشتری ثابت، مهم, based on stated or clearly contextual information.",
+   "Return any standalone conversation facts or follow-ups not uniquely attributable to an individual in observations, preserving meaning in Persian.",
    "Do not invent any phone, names, relatives, appointments, dates, or hidden information. Unknown fields must be null.",
    "Any relative or ambiguous date without resolvable specific calendar date must set date_iso=null and requires_confirmation=true, with a Persian question.",
    "Explicit dates must use Gregorian YYYY-MM-DD and 24h HH:mm in Asia/Tehran.",
@@ -134,7 +138,8 @@ Deno.serve(async(req:Request):Promise<Response>=>{
   const result={job_id:id,status:"needs_review",transcript,
    contacts:parsed.contacts.slice(0,40),
    reminders:parsed.reminders.slice(0,30),
-   questions:parsed.questions.slice(0,30)};
+   questions:parsed.questions.slice(0,30),
+   observations:parsed.observations.slice(0,40)};
   const saved=await dbRequest("PATCH","voice_jobs?id=eq."+encodeURIComponent(id),jwt,
    {status:"review",response_json:result,updated_at:new Date().toISOString()});
   if(!saved.ok)return reply(503,{detail:"Result saving failed; retry later"});
