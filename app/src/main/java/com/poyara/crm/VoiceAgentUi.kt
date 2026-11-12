@@ -23,6 +23,8 @@ import java.io.File
 @Composable
 internal fun VoiceAgentPanel(
     audioPaths: List<String>,
+    autoTranscribePaths: List<String>,
+    onAutoConsumed: (String) -> Unit,
     onTranscribed: (String) -> Unit
 ) {
     val context = LocalContext.current
@@ -36,6 +38,7 @@ internal fun VoiceAgentPanel(
     var openPath by remember { mutableStateOf<String?>(null) }
     var editableText by remember { mutableStateOf("") }
     var reload by remember { mutableIntStateOf(0) }
+    var showServerInfo by remember { mutableStateOf(false) }
 
     DisposableEffect(Unit) {
         onDispose { transcriberState.value?.cancel() }
@@ -45,7 +48,7 @@ internal fun VoiceAgentPanel(
         openPath = path
         editableText = transcriptPrefs.getString(path, "").orEmpty()
     }
-    fun startTranscription(path: String) {
+    fun startTranscription(path: String, automatic: Boolean = false) {
         if (busyPath != null) return
         failure = ""
         stage = "در حال آماده‌سازی فایل ضبط‌شده..."
@@ -59,14 +62,35 @@ internal fun VoiceAgentPanel(
                 busyPath = null
                 stage = ""
                 if (text.isNullOrBlank()) {
-                    failure = error ?: "سرویس گوگل فایل را تبدیل نکرد. فایل صوتی محفوظ است."
+                    failure = error ?: "سرویس گوشی فایل را تبدیل نکرد. فایل صوتی محفوظ است."
                 } else {
                     transcriptPrefs.edit().putString(path, text).apply()
                     reload++
-                    openTranscript(path)
+                    if (automatic) {
+                        onTranscribed(text)
+                        Toast.makeText(context,
+                            "متن به «هرچه درباره مخاطب می‌دانی» اضافه شد",
+                            Toast.LENGTH_LONG).show()
+                    } else {
+                        openTranscript(path)
+                    }
                 }
+                if (automatic) onAutoConsumed(path)
             }
         )
+    }
+
+    LaunchedEffect(autoTranscribePaths, busyPath) {
+        if (busyPath == null) {
+            val pending = autoTranscribePaths.firstOrNull()
+            if (pending != null) {
+                if (File(pending).isFile) startTranscription(pending, automatic = true)
+                else {
+                    failure = "فایل صوتی برای تبدیل پیدا نشد؛ ضبط‌های دیگر محفوظ‌اند."
+                    onAutoConsumed(pending)
+                }
+            }
+        }
     }
 
     Card {
@@ -74,15 +98,15 @@ internal fun VoiceAgentPanel(
             Modifier.fillMaxWidth().padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(9.dp)
         ) {
-            Text("تبدیل صوت به متن با سرویس گفتار گوشی", fontWeight = FontWeight.Bold)
+            Text("تبدیل خودکار ویس به متن", fontWeight = FontWeight.Bold)
             Text(
-                "فقط بعد از پایان ضبط کار می‌کند. متن حین صحبت نشان داده نمی‌شود و هیچ سروری لازم نیست. " +
-                    "تشخیص فایل و فارسی به سرویس گوگل نصب‌شده روی گوشی بستگی دارد.",
+                "با پایان ضبط، تبدیل به متن خودکار آغاز می‌شود و نتیجه در «هرچه درباره مخاطب می‌دانی» نوشته می‌شود. " +
+                    "تشخیص فایل فارسی به سرویس گفتار نصب‌شده روی گوشی بستگی دارد.",
                 color = MaterialTheme.colorScheme.secondary,
                 style = MaterialTheme.typography.bodySmall
             )
             if (audioPaths.isEmpty()) {
-                Text("برای آزمایش، بالاتر «ضبط صوت» را بزن؛ پس از پایان ضبط، تبدیل را انتخاب کن.")
+                Text("بالا «شروع ضبط صوت» را بزن؛ بعد از «پایان ضبط» منتظر متن بمان.")
             }
             audioPaths.distinct().filter { File(it).isFile }.forEachIndexed { index, path ->
                 val savedText = remember(path, reload) {
@@ -132,7 +156,29 @@ internal fun VoiceAgentPanel(
                 Text(failure, color = MaterialTheme.colorScheme.error,
                     style = MaterialTheme.typography.bodySmall)
             }
+            OutlinedButton(onClick = { showServerInfo = true },
+                modifier = Modifier.fillMaxWidth()) {
+                Text("ارسال به سرور و پردازش")
+            }
+            Text("فعلاً ارسال به سرور غیرفعال است و هیچ ویسی منتقل نمی‌شود.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.secondary)
         }
+    }
+
+    if (showServerInfo) {
+        AlertDialog(
+            onDismissRequest = { showServerInfo = false },
+            title = { Text("پردازش روی سرور") },
+            text = { Text(
+                "دکمه آماده شده، اما ارسال واقعی هنوز فعال نیست. " +
+                    "وقتی مشخص کردی پردازش سرور چگونه انجام شود، آن را متصل می‌کنیم. " +
+                    "فعلاً صوت‌ها فقط روی گوشی ذخیره می‌شوند."
+            ) },
+            confirmButton = { TextButton(onClick = { showServerInfo = false }) {
+                Text("متوجه شدم")
+            } }
+        )
     }
 
     if (openPath != null) {
