@@ -1,0 +1,48 @@
+name: One-time free Persian voice AI demo
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - server/demo_free_models.py
+      - .github/workflows/voice-free-demo.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-free-models:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install offline transcription dependencies
+        run: python -m pip install faster-whisper==1.1.1 httpx==0.28.1
+      - name: Fetch a public Persian sample voice
+        run: |
+          curl --fail --location --retry 3 --max-time 90 \
+            "https://raw.githubusercontent.com/Fouladi-K/pocket-tts-Persian-webui/main/training/farsi/examples/03_tech.wav" \
+            --output sample.wav
+          test "$(stat -c%s sample.wav)" -gt 10000
+      - name: Start free local Ollama model
+        run: |
+          docker run -d --name poyara-ollama -p 127.0.0.1:11434:11434 ollama/ollama:latest
+          for attempt in $(seq 1 30); do
+            if curl --silent --fail http://127.0.0.1:11434/api/version >/dev/null; then break; fi
+            sleep 3
+          done
+          docker exec poyara-ollama ollama pull qwen2.5:1.5b
+      - name: Run both models and output sample JSON
+        run: |
+          python server/demo_free_models.py --audio sample.wav --out demo_result.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: free-voice-demo-result
+          path: demo_result.json
+          if-no-files-found: ignore
+          retention-days: 7
