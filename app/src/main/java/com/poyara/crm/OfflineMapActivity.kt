@@ -57,6 +57,8 @@ class OfflineMapActivity : ComponentActivity() {
     private var userPin: Marker? = null
     private var selectedEntryId = 0L
     private var allowPick = false
+    private var previewLatitude: Double? = null
+    private var previewLongitude: Double? = null
     private var currentTag = "همه"
     private var radiusMeters = 2000
     private var nearbyOrigin: Location? = null
@@ -101,6 +103,10 @@ class OfflineMapActivity : ComponentActivity() {
         db = CrmDb(applicationContext)
         selectedEntryId = intent.getLongExtra("entry_id", 0L)
         allowPick = intent.getBooleanExtra("allow_pick_location", false)
+        if (intent.hasExtra("preview_latitude") && intent.hasExtra("preview_longitude")) {
+            previewLatitude = intent.getDoubleExtra("preview_latitude", 0.0)
+            previewLongitude = intent.getDoubleExtra("preview_longitude", 0.0)
+        }
 
         // OSM public tiles: only user-visible tiles are fetched, with an identifying
         // User-Agent and copyright attribution. There is no offline bulk download.
@@ -125,16 +131,30 @@ class OfflineMapActivity : ComponentActivity() {
                 (selectedEntryId == 0L || it.id == selectedEntryId)
         }
         mapView.controller.setCenter(GeoPoint(
-            starting?.latitude ?: 36.2972, starting?.longitude ?: 59.6067
+            previewLatitude ?: starting?.latitude ?: 36.2972,
+            previewLongitude ?: starting?.longitude ?: 59.6067
         ))
 
         showScreen()
         enableMapTap()
         showPins()
+        if (previewLatitude != null && previewLongitude != null &&
+            (selectedEntryId == 0L || starting == null)) {
+            mapView.overlays.add(Marker(mapView).apply {
+                position = GeoPoint(previewLatitude!!, previewLongitude!!)
+                title = "موقعیت انتخاب‌شده"
+                icon = circleIcon(Color.rgb(12, 121, 109), 25)
+                setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+            })
+            mapView.invalidate()
+        }
         updateStatus()
-        // Ask only for location permission if necessary; the map itself always opens.
-        locationAction = "center"
-        locateWithPermission()
+        // When viewing a saved customer's pin, don't center on the user's GPS.
+        // Location permission remains optional via the 'my location' button.
+        if (allowPick || (selectedEntryId == 0L && previewLatitude == null)) {
+            locationAction = "center"
+            locateWithPermission()
+        }
     }
 
     private fun showScreen() {
@@ -184,7 +204,7 @@ class OfflineMapActivity : ComponentActivity() {
             locationAction = "center"
             locateWithPermission()
         })
-        if (selectedEntryId > 0 || allowPick) {
+        if (allowPick) {
             actions.addView(makeButton("ثبت GPS") {
                 locationAction = "save"
                 locateWithPermission()
@@ -244,8 +264,10 @@ class OfflineMapActivity : ComponentActivity() {
         if (fetchingLocation) return
         val count = visibleContacts().size
         status.text = when {
-            selectedEntryId > 0 || allowPick ->
+            allowPick ->
                 "برای ثبت موقعیت، روی نقشه بزن یا «ثبت GPS» را انتخاب کن"
+            previewLatitude != null && previewLongitude != null ->
+                "پیش‌نمایش موقعیت ثبت‌شده · برای تغییر از فرم مخاطب استفاده کن"
             nearbyOrigin != null ->
                 count.toString() + " مشتری در شعاع " + radiusMeters.toString() + " متر"
             else -> count.toString() + " مشتری دارای موقعیت · نقشه با اینترنت و کش محلی"
@@ -289,7 +311,7 @@ class OfflineMapActivity : ComponentActivity() {
     private fun enableMapTap() {
         mapView.overlays.add(0, MapEventsOverlay(object : MapEventsReceiver {
             override fun singleTapConfirmedHelper(point: GeoPoint?): Boolean {
-                if (point == null || (selectedEntryId <= 0 && !allowPick)) return false
+                if (point == null || !allowPick) return false
                 savePoint(point.latitude, point.longitude, "manual")
                 return true
             }
@@ -298,8 +320,8 @@ class OfflineMapActivity : ComponentActivity() {
     }
 
     private fun savePoint(latitude: Double, longitude: Double, source: String) {
+        if (!allowPick) return
         if (selectedEntryId > 0) db.setLocation(selectedEntryId, latitude, longitude, source)
-        if (selectedEntryId <= 0 && !allowPick) return
         setResult(Activity.RESULT_OK, Intent().apply {
             putExtra("latitude", latitude)
             putExtra("longitude", longitude)
