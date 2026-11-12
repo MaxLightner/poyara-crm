@@ -165,7 +165,10 @@ private fun CrmHome(initialRecordId: Long) {
     }
     LaunchedEffect(Unit) {
         ReminderScheduler.createChannel(context)
-        VoiceQueue.schedulePending(context)
+        // Google file-to-text mode: stop leftover background uploads from old versions.
+        // Voice files and all CRM records are retained.
+        androidx.work.WorkManager.getInstance(context)
+            .cancelAllWorkByTag("poyara_voice_upload")
         callerEnabled = if (Build.VERSION.SDK_INT >= 29) {
             roleManager?.isRoleHeld(RoleManager.ROLE_CALL_SCREENING) == true
         } else false
@@ -381,8 +384,8 @@ private fun CrmHome(initialRecordId: Long) {
             } else {
                 addDraftAttachment("audio", target)
             }
-            // Queue the preserved M4A immediately; WorkManager waits for internet.
-            VoiceQueue.record(context, target, recordId)
+            // File remains on this device; no server upload is scheduled.
+            Toast.makeText(context, "ویس ذخیره شد؛ حالا «تبدیل به متن» را بزن", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -861,22 +864,28 @@ private fun CrmHome(initialRecordId: Long) {
                 }
 
                 VoiceAgentPanel(
-                    db = db,
                     audioPaths = files.filter { it.type == "audio" }.map { it.filePath } +
-                        draftAttachments.mapNotNull { saved ->
-                            val parts = saved.split("|", limit = 2)
+                        draftAttachments.mapNotNull { encoded ->
+                            val parts = encoded.split("|", limit = 2)
                             if (parts.size == 2 && parts[0] == "audio") parts[1] else null
                         },
-                    // Never upload unrelated customer records to the AI service.
-                    // Matching is performed locally after the transcript is returned.
-                    contacts = allEntries.filter { it.id == recordId },
-                    onImported = { refresh() },
                     onTranscribed = { transcript ->
-                        val updated = listOf(note, transcript)
-                            .filter { it.isNotBlank() }.joinToString("\n")
-                        note = updated
-                        save(newNote = updated)
-                        Toast.makeText(context, "متن به یادداشت افزوده شد", Toast.LENGTH_SHORT).show()
+                        val extracted = VoiceLocalFacts.extract(transcript)
+                        val nextName = personName.ifBlank { extracted.personName }
+                        val nextPhone = phone.ifBlank { extracted.phone }
+                        val nextCompany = companyName.ifBlank { extracted.company }
+                        val updatedNote = if (note.contains(transcript)) note else
+                            listOf(note, transcript).filter { it.isNotBlank() }.joinToString("\n")
+                        personName = nextName
+                        phone = nextPhone
+                        companyName = nextCompany
+                        note = updatedNote
+                        save(
+                            newName = nextName,
+                            newPhone = nextPhone,
+                            newCompany = nextCompany,
+                            newNote = updatedNote
+                        )
                     }
                 )
 
