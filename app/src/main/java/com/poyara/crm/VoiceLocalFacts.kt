@@ -44,7 +44,7 @@ internal object VoiceLocalFacts {
             .distinct().toList()
         val companies = Regex("(مبلمان|کابینت|فروشگاه|شرکت|مجموعه|برند)\\s+([آ-ی]{2,32})")
             .findAll(normalized)
-            .map { (prefix, name) -> prefix + " " + name }
+            .map { it.groupValues[1] + " " + it.groupValues[2] }
             .distinct().toList()
         return VoiceQuickFields(
             personName = people.singleOrNull().orEmpty(),
