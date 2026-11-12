@@ -23,9 +23,8 @@ internal object PoyaraCloud {
 /** Email/password session with encrypted on-device refresh-token storage. */
 internal class PoyaraAuth(context: Context) {
     private val prefs = context.applicationContext.getSharedPreferences("poyara_auth_v1", Context.MODE_PRIVATE)
-    var hasSession: Boolean
+    val hasSession: Boolean
         get() = read("refresh")?.isNotBlank() == true
-        private set(_) {}
 
     val email: String get() = prefs.getString("email", "").orEmpty()
 
