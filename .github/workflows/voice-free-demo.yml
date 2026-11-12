@@ -35,7 +35,7 @@ jobs:
             if curl --silent --fail http://127.0.0.1:11434/api/version >/dev/null; then break; fi
             sleep 3
           done
-          docker exec poyara-ollama ollama pull qwen2.5:1.5b
+          docker exec poyara-ollama ollama pull qwen2.5:7b
       - name: Run both models and output sample JSON
         run: |
           python server/demo_free_models.py --audio sample.wav --out demo_result.json
