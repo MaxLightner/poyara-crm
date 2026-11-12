@@ -204,6 +204,7 @@ internal fun VoiceAgentPanel(
         val people = proposal.optJSONArray("contacts")
         val plans = proposal.optJSONArray("reminders")
         val questions = proposal.optJSONArray("questions")
+        val observations = proposal.optJSONArray("observations")
         AlertDialog(
             onDismissRequest = { if (!importing) review = null },
             title = { Text("بازبینی اطلاعات ویس") },
@@ -243,6 +244,13 @@ internal fun VoiceAgentPanel(
                             else item.optString("date_iso")
                         val time = if (item.isNull("time_local")) "" else item.optString("time_local")
                         Text("• " + title + " · " + date + " " + time)
+                    }
+                    if ((observations?.length() ?: 0) > 0) {
+                        HorizontalDivider()
+                        Text("نکات تکمیلی گفته‌شده:", fontWeight = FontWeight.Bold)
+                        for (i in 0 until observations!!.length()) {
+                            Text("• " + observations.optString(i))
+                        }
                     }
                     if ((questions?.length() ?: 0) > 0) {
                         HorizontalDivider()
