@@ -49,14 +49,26 @@ def main():
         "سه شنبه ساعت سه و نیم با رضایی جلسه بذاریم، "
         "دو روز قبلش بهم یادآوری کن. شماره خانم محمدی رو ندارم.")
     instructions = (
-        "Extract Persian spoken CRM information. Reply with ONLY a JSON object "
-        "matching the schema; do not fabricate missing facts. "
-        "Multiple individuals at the same company are separate contacts. "
-        "Unknown date, person details or phone are null; a weekday without "
-        "a precise date has date_iso=null and requires_confirmation=true. "
-        "All dates are Tehran local. No actions are executed.")
+        "You are a meticulous data EXTRACTOR, not a creative writer. "
+        "Extract facts mentioned in a Persian colloquial voice note. "
+        "Use only the source transcript, no guesses. Write values in Persian. "
+        "A brand/store name is the company: e.g. مبلمان آریا (not آریا the person, not مشهد). "
+        "City/place names are addresses, never business names. "
+        "Each explicitly named human is a single contact; do not invent first names. "
+        "Only assign phone to the person who owns it, digits 0-9 only. "
+        "If a phone is not supplied for someone, use null. "
+        "Unknown address, role, related_to or other fields MUST be null. "
+        "For stated workplace relationship, assign same company. "
+        "Do not duplicate people, contacts, reminders or questions. "
+        "For ساعت سه و نیم use 15:30. "
+        "For weekday without absolute date, set date_iso=null and requires_confirmation=true. "
+        "For reminder two days before, set remind_days_before=2. "
+        "Do not propose dates in the past. "
+        "When unsure, raise one concise question rather than making up a value. "
+        "Never execute phone calls or messages. "
+        "Return only the schema-valid JSON object.")
     payload = {
-      "model":"qwen2.5:1.5b","stream":False,"format":proposal_schema(),
+      "model":"qwen2.5:7b","stream":False,"format":proposal_schema(),
       "messages":[{"role":"system","content":instructions},
                   {"role":"user","content":json.dumps({
                     "now_iran":datetime.now(ZoneInfo("Asia/Tehran")).isoformat(),
