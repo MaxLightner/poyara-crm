@@ -56,6 +56,12 @@ Deno.serve(async(req:Request):Promise<Response>=>{
  if(!auth?.ok) return reply(401,{detail:"Invalid login"});
  const user=await auth.json().catch(()=>({}));
  if(!user.id) return reply(401,{detail:"Invalid user"});
+ const allowedEmails=(Deno.env.get("POYARA_ALLOWED_EMAILS")??"").split(",")
+  .map(v=>v.trim().toLowerCase()).filter(Boolean);
+ if(!allowedEmails.length) return reply(503,{detail:"POYARA_ALLOWED_EMAILS must be configured"});
+ if(!allowedEmails.includes(String(user.email??"").toLowerCase())){
+  return reply(403,{detail:"This email is not authorized to use paid voice processing"});
+ }
  if(!OPENAI_KEY) return reply(503,{detail:"OPENAI_API_KEY is not configured on Poyara server"});
  const contentType=req.headers.get("Content-Type")??"";
  if(!contentType.startsWith("multipart/form-data"))return reply(415,{detail:"Expected multipart audio upload"});
@@ -66,6 +72,15 @@ Deno.serve(async(req:Request):Promise<Response>=>{
  const existing=await previous.json();
  if(existing.length>0&&existing[0].status==="review"&&existing[0].response_json){
   return reply(200,existing[0].response_json);
+ }
+ const beginning=new Date(Date.now()-24*60*60*1000).toISOString();
+ const recent=await dbRequest("GET",
+  "voice_jobs?created_at=gte."+encodeURIComponent(beginning)+"&select=id",jwt);
+ if(!recent.ok) return reply(503,{detail:"Rate limit unavailable"});
+ const dailyCount=(await recent.json()).length;
+ const dailyLimit=Math.min(200,Math.max(1,Number(Deno.env.get("POYARA_DAILY_VOICE_LIMIT")??"50")));
+ if(existing.length===0&&dailyCount>=dailyLimit) {
+  return reply(429,{detail:"Daily voice limit reached. Try again tomorrow."});
  }
  if(existing.length===0){
   const inserted=await dbRequest("POST","voice_jobs",jwt,
