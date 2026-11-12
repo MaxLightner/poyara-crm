@@ -27,7 +27,7 @@ WHISPER_MODEL = os.getenv("POYARA_WHISPER_MODEL", "small")
 WHISPER_DEVICE = os.getenv("POYARA_WHISPER_DEVICE", "cpu")
 WHISPER_COMPUTE = os.getenv("POYARA_WHISPER_COMPUTE", "int8")
 OLLAMA_URL = os.getenv("POYARA_OLLAMA_URL", "http://127.0.0.1:11434")
-OLLAMA_MODEL = os.getenv("POYARA_OLLAMA_MODEL", "qwen2.5:3b")
+OLLAMA_MODEL = os.getenv("POYARA_OLLAMA_MODEL", "qwen2.5:7b")
 pool = ThreadPoolExecutor(max_workers=1)
 lock = threading.RLock()
 speech_model = None
@@ -110,12 +110,20 @@ def process_job(job_id):
         set_job(job_id, "processing", "extracting")
         now = datetime.now(ZoneInfo("Asia/Tehran")).isoformat()
         context = json.loads(job["context_json"])
-        prompt = ("You extract Persian CRM facts from NATURAL, UNSTRUCTURED spoken notes. "
-          "Never fabricate details. Extract multiple people and link coworkers through company. "
-          "Return JSON ONLY matching the supplied schema. Unknown facts are null. "
-          "Dates with ambiguous weekdays must use null and requires_confirmation=true. "
-          "Never execute calls or send messages. Put unlinked notes in observations. "
-          "Remind days 0..7. Times are local to Asia/Tehran.\n"
+        prompt = ("You are a meticulous data EXTRACTOR, not a creative writer. "
+          "Extract facts from NATURAL, UNSTRUCTURED spoken Persian. "
+          "Use only information stated in the transcript; never guess or fabricate. "
+          "A business/brand name is the company, a city is an address, not a company. "
+          "Each human is a separate contact. Never invent first names. "
+          "Only assign a phone number to the person whose number was given. "
+          "If no number was stated for someone, set phone=null. "
+          "Unknown fields MUST be null. Do not create duplicate people or reminders. "
+          "When the speaker says ساعت سه و نیم use time_local=15:30. "
+          "Weekday without a precise date must have date_iso=null and requires_confirmation=true. "
+          "Do not invent dates in the past. "
+          "Remind days 0..7. Put notes not tied to a contact in observations. "
+          "Never execute calls or messages; output facts for user review. "
+          "Return JSON ONLY matching the supplied schema. Times use Asia/Tehran.\n"
           +json.dumps({"now_iran":now,"transcript":transcript,
                 "existing_contacts":context},ensure_ascii=False))
         with httpx.Client(timeout=180) as client:
