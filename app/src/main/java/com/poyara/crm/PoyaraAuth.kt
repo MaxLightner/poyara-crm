@@ -47,16 +47,19 @@ internal class PoyaraAuth(context: Context) {
         return false // Email verification required; never treat it as signed in.
     }
 
-    @Synchronized
-    fun accessToken(): String {
+    companion object {
+        private val refreshLock = Any()
+    }
+
+    fun accessToken(): String = synchronized(refreshLock) {
         val token = read("access") ?: error("ابتدا با ایمیل وارد پویارا شو")
         val expiry = prefs.getLong("expiry", 0L)
-        if (expiry > System.currentTimeMillis() + 120_000L) return token
+        if (expiry > System.currentTimeMillis() + 120_000L) return@synchronized token
         val refresh = read("refresh") ?: error("نشست ورود تمام شده؛ دوباره وارد شو")
         val result = authRequest("/auth/v1/token?grant_type=refresh_token", JSONObject()
             .put("refresh_token", refresh))
         saveSession(result, email)
-        return read("access") ?: error("توکن جدید دریافت نشد")
+        return@synchronized read("access") ?: error("توکن جدید دریافت نشد")
     }
 
     fun logout() { prefs.edit().clear().apply() }
