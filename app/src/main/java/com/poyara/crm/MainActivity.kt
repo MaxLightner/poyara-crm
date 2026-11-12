@@ -156,7 +156,7 @@ private fun CrmHome(initialRecordId: Long) {
     var recordingStartedAt by remember { mutableLongStateOf(0L) }
     var recordingClock by remember { mutableLongStateOf(0L) }
     var recordingError by remember { mutableStateOf("") }
-    var pendingAutoTranscription by remember { mutableStateOf<String?>(null) }
+    var pendingAutoTranscriptions by remember { mutableStateOf<List<String>>(emptyList()) }
     LaunchedEffect(isRecording) {
         while (isRecording) {
             recordingClock = SystemClock.elapsedRealtime()
@@ -424,7 +424,7 @@ private fun CrmHome(initialRecordId: Long) {
             }
             // No network access: the original M4A stays in the app's private storage.
             // Child panel starts file transcription automatically after the recording stops.
-            pendingAutoTranscription = target.absolutePath
+            pendingAutoTranscriptions = pendingAutoTranscriptions + target.absolutePath
         } catch (error: Exception) {
             recordingError = "صدا ذخیره شد، اما اتصال به پرونده کامل نشد: " +
                 (error.localizedMessage ?: "خطا")
@@ -945,9 +945,9 @@ private fun CrmHome(initialRecordId: Long) {
                 }
 
                 VoiceAgentPanel(
-                    autoTranscribePath = pendingAutoTranscription,
+                    autoTranscribePaths = pendingAutoTranscriptions,
                     onAutoConsumed = { consumed ->
-                        if (pendingAutoTranscription == consumed) pendingAutoTranscription = null
+                        pendingAutoTranscriptions = pendingAutoTranscriptions.filterNot { it == consumed }
                     },
                     audioPaths = files.filter { it.type == "audio" }.map { it.filePath } +
                         draftAttachments.mapNotNull { encoded ->
