@@ -7,6 +7,10 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.os.Build
+import android.net.Uri
+import android.content.ComponentName
+import android.provider.Settings
+import androidx.core.content.FileProvider
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -29,6 +33,8 @@ internal class VoiceFileTranscriber(private val context: Context) {
     private var recognizer: SpeechRecognizer? = null
     private var descriptor: ParcelFileDescriptor? = null
     private var scratch: File? = null
+    private var grantedUri: Uri? = null
+    private var grantedPackage: String? = null
     private val finished = AtomicBoolean(false)
 
     fun transcribe(
@@ -37,8 +43,8 @@ internal class VoiceFileTranscriber(private val context: Context) {
         onFinish: (String?, String?) -> Unit
     ) {
         check(Looper.myLooper() == Looper.getMainLooper())
-        if (Build.VERSION.SDK_INT < 33) {
-            onFinish(null, "این آزمایش برای دریافت فایل به اندروید ۱۳ یا جدیدتر نیاز دارد.")
+        if (Build.VERSION.SDK_INT < 31) {
+            onFinish(null, "موتور گفتار اندرویدِ این نسخه امکان خواندن فایل ضبط‌شده را ندارد. برای اندروید ۱۱ و قدیمی‌تر به روش تبدیل دیگری نیاز است؛ فایل اصلی محفوظ است.")
             return
         }
         if (!SpeechRecognizer.isRecognitionAvailable(context)) {
@@ -47,6 +53,12 @@ internal class VoiceFileTranscriber(private val context: Context) {
         }
         if (!audio.isFile || audio.length() == 0L) {
             onFinish(null, "فایل صوتی پیدا نشد.")
+            return
+        }
+        if (Build.VERSION.SDK_INT in 31..32) {
+            // Android 12 has a *legacy*, optional URI injection hint. This is not
+            // guaranteed to be honoured by Google's recognition provider.
+            startLegacyRecognition(audio, onStage, onFinish)
             return
         }
         onStage("آماده‌سازی فایل ضبط‌شده…")
@@ -66,6 +78,85 @@ internal class VoiceFileTranscriber(private val context: Context) {
         }.start()
     }
 
+    @Suppress("DEPRECATION")
+    private fun startLegacyRecognition(
+        audio: File,
+        onStage: (String) -> Unit,
+        onFinish: (String?, String?) -> Unit
+    ) {
+        try {
+            val uri = FileProvider.getUriForFile(
+                context, context.packageName + ".files", audio
+            )
+            grantedUri = uri
+            // A RecognitionService starts through Binder, so grant its package
+            // explicit URI access; intent flags alone may not propagate.
+            val serviceName = Settings.Secure.getString(
+                context.contentResolver, "voice_recognition_service"
+            )
+            val packageName = serviceName?.let { ComponentName.unflattenFromString(it)?.packageName }
+            if (!packageName.isNullOrBlank()) {
+                context.grantUriPermission(
+                    packageName, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+                grantedPackage = packageName
+            }
+            val service = SpeechRecognizer.createSpeechRecognizer(context)
+            recognizer = service
+            service.setRecognitionListener(makeListener(onStage,onFinish))
+            val intent = baseRecognitionIntent().apply {
+                putExtra(RecognizerIntent.EXTRA_AUDIO_INJECT_SOURCE, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            onStage("در حال آزمایش خواندن فایل در اندروید ۱۲…")
+            service.startListening(intent)
+        } catch (ex: Exception) {
+            finish(null, "سرویس گفتار اندروید ۱۲ فایل را نپذیرفت: " + (ex.localizedMessage ?: "خطای ناشناخته"), onFinish)
+        }
+    }
+
+    private fun baseRecognitionIntent() = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE, "fa-IR")
+        putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+        putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+    }
+
+    private fun makeListener(
+        onStage: (String) -> Unit,
+        onFinish: (String?, String?) -> Unit
+    ): RecognitionListener = object : RecognitionListener {
+        override fun onReadyForSpeech(params: Bundle?) { onStage("در حال بررسی صوت ضبط‌شده…") }
+        override fun onBeginningOfSpeech() {}
+        override fun onRmsChanged(rmsdB: Float) {}
+        override fun onBufferReceived(buffer: ByteArray?) {}
+        override fun onEndOfSpeech() { onStage("در حال تکمیل متن…") }
+        override fun onPartialResults(partialResults: Bundle?) {} // never show partials
+        override fun onEvent(eventType: Int, params: Bundle?) {}
+        override fun onError(error: Int) {
+            finish(null, when (error) {
+                SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
+                SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE ->
+                    "این سرویس گفتار از فارسی پشتیبانی نمی‌کند."
+                SpeechRecognizer.ERROR_NO_MATCH,
+                SpeechRecognizer.ERROR_SPEECH_TIMEOUT ->
+                    "متنی پیدا نشد. ممکن است سرویس گوشی فایل ضبط‌شده را نپذیرد."
+                SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT ->
+                    "تشخیص گفتار به اینترنت نیاز دارد یا اتصال قطع است. فایل اصلی محفوظ است."
+                SpeechRecognizer.ERROR_AUDIO ->
+                    "فایل توسط سرویس گفتار پشتیبانی نشد."
+                else ->
+                    "سرویس گفتار فایل را تبدیل نکرد (کد " + error + "). فایل محفوظ است."
+            }, onFinish)
+        }
+        override fun onResults(results: Bundle?) {
+            val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                ?.firstOrNull()?.trim().orEmpty()
+            if (text.isBlank()) finish(null,"متنی از فایل دریافت نشد.",onFinish)
+            else finish(text,null,onFinish)
+        }
+    }
+
     private fun startRecognition(
         pcm: File, sampleRate: Int, channels: Int,
         onStage: (String) -> Unit, onFinish: (String?, String?) -> Unit
@@ -74,38 +165,8 @@ internal class VoiceFileTranscriber(private val context: Context) {
             descriptor = ParcelFileDescriptor.open(pcm, ParcelFileDescriptor.MODE_READ_ONLY)
             val service = SpeechRecognizer.createSpeechRecognizer(context)
             recognizer = service
-            service.setRecognitionListener(object : RecognitionListener {
-                override fun onReadyForSpeech(params: Bundle?) { onStage("در حال خواندن فایل توسط سرویس تشخیص گفتار…") }
-                override fun onBeginningOfSpeech() {}
-                override fun onRmsChanged(rmsdB: Float) {}
-                override fun onBufferReceived(buffer: ByteArray?) {}
-                override fun onEndOfSpeech() { onStage("در حال تکمیل متن…") }
-                override fun onPartialResults(partialResults: Bundle?) {} // never show live text
-                override fun onEvent(eventType: Int, params: Bundle?) {}
-                override fun onError(error: Int) {
-                    finish(null, when (error) {
-                        SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
-                        SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> "سرویس تشخیص گفتار این گوشی زبان فارسی را پشتیبانی نمی‌کند."
-                        SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT ->
-                            "متنی تشخیص داده نشد. ممکن است سرویس گوشی دریافت فایل ضبط‌شده را پشتیبانی نکند."
-                        SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT ->
-                            "خطای شبکه در سرویس تشخیص گفتار. فایل اصلی حفظ شده است."
-                        SpeechRecognizer.ERROR_AUDIO -> "سرویس تشخیص گفتار این فایل را نپذیرفت."
-                        else -> "تشخیص گفتار ناموفق بود (کد $error). ممکن است موتور گوشی از فایل پشتیبانی نکند."
-                    }, onFinish)
-                }
-                override fun onResults(results: Bundle?) {
-                    val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                        ?.firstOrNull()?.trim().orEmpty()
-                    if (text.isBlank()) finish(null, "متنی از فایل دریافت نشد.", onFinish)
-                    else finish(text, null, onFinish)
-                }
-            })
-            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "fa-IR")
-                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
-                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            service.setRecognitionListener(makeListener(onStage,onFinish))
+            val intent = baseRecognitionIntent().apply {
                 putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE, descriptor)
                 putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_SAMPLING_RATE, sampleRate)
                 putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_CHANNEL_COUNT, channels)
@@ -126,6 +187,11 @@ internal class VoiceFileTranscriber(private val context: Context) {
         descriptor = null
         runCatching { scratch?.delete() }
         scratch = null
+        grantedPackage?.let { pkg -> grantedUri?.let { uri ->
+            runCatching { context.revokeUriPermission(pkg, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+        } }
+        grantedPackage = null
+        grantedUri = null
         callback(text, error)
     }
 
@@ -139,10 +205,15 @@ internal class VoiceFileTranscriber(private val context: Context) {
             runCatching { recognizer?.destroy() }
             runCatching { descriptor?.close() }
             runCatching { scratch?.delete() }
+            grantedPackage?.let { pkg -> grantedUri?.let { uri ->
+                runCatching { context.revokeUriPermission(pkg, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+            } }
         }
         recognizer = null
         descriptor = null
         scratch = null
+        grantedPackage = null
+        grantedUri = null
     }
 
     private fun decodeM4aToPcm(input: File, target: File): Pair<Int, Int> {
