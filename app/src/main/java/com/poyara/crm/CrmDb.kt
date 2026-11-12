@@ -54,6 +54,7 @@ data class VoiceUploadJob(
     val jobId: String,
     val audioPath: String,
     val entryId: Long,
+    val ownerEmail: String,
     val status: String,
     val attempts: Int,
     val lastError: String
@@ -130,6 +131,7 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
             job_id TEXT PRIMARY KEY,
             audio_path TEXT NOT NULL UNIQUE,
             entry_id INTEGER NOT NULL DEFAULT 0,
+            owner_email TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL DEFAULT 'pending',
             attempts INTEGER NOT NULL DEFAULT 0,
             last_error TEXT NOT NULL DEFAULT '',
@@ -145,13 +147,16 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
                 cur.getString(cur.getColumnIndexOrThrow("job_id")),
                 cur.getString(cur.getColumnIndexOrThrow("audio_path")),
                 cur.getLong(cur.getColumnIndexOrThrow("entry_id")),
+                cur.getString(cur.getColumnIndexOrThrow("owner_email")),
                 cur.getString(cur.getColumnIndexOrThrow("status")),
                 cur.getInt(cur.getColumnIndexOrThrow("attempts")),
                 cur.getString(cur.getColumnIndexOrThrow("last_error"))
             )
         }
 
-    fun queueVoiceUpload(audioPath: String, entryId: Long = 0L): VoiceUploadJob {
+    fun queueVoiceUpload(
+        audioPath: String, entryId: Long = 0L, ownerEmail: String = ""
+    ): VoiceUploadJob {
         val previous = voiceUpload(audioPath)
         if (previous != null) return previous
         require(java.io.File(audioPath).isFile) { "فایل ویس پیدا نشد" }
@@ -160,6 +165,7 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
             put("job_id", id)
             put("audio_path", audioPath)
             put("entry_id", entryId)
+            put("owner_email", ownerEmail.trim().lowercase(java.util.Locale.ROOT))
             put("status", "pending")
             put("attempts", 0)
             put("last_error", "")
