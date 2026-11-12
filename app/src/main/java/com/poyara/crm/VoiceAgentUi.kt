@@ -1,6 +1,9 @@
 package com.poyara.crm
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.widget.Toast
@@ -29,7 +32,8 @@ internal fun VoiceAgentPanel(
     db: CrmDb,
     audioPaths: List<String>,
     contacts: List<ContactEntry>,
-    onImported: () -> Unit
+    onImported: () -> Unit,
+    onTranscribed: (String) -> Unit
 ) {
     val context = LocalContext.current
     val settings = remember { VoiceServerSettings(context.applicationContext) }
@@ -40,6 +44,15 @@ internal fun VoiceAgentPanel(
     var review by remember { mutableStateOf<VoiceReview?>(null) }
     var importing by remember { mutableStateOf(false) }
     var refreshTick by remember { mutableIntStateOf(0) }
+    var transcribingPath by remember { mutableStateOf<String?>(null) }
+    var transcriptionStage by remember { mutableStateOf("") }
+    var transcriptionError by remember { mutableStateOf("") }
+    var transcriptionResult by remember { mutableStateOf<String?>(null) }
+    var editableTranscript by remember { mutableStateOf("") }
+    var recognizer by remember { mutableStateOf<VoiceFileTranscriber?>(null) }
+    DisposableEffect(Unit) {
+        onDispose { recognizer?.cancel() }
+    }
     val notificationPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -118,6 +131,36 @@ internal fun VoiceAgentPanel(
                                 color = MaterialTheme.colorScheme.error)
                         }
                     }
+                    if (transcribingPath == path) {
+                        OutlinedButton(onClick = {
+                            recognizer?.cancel()
+                            transcribingPath = null
+                            transcriptionStage = ""
+                        }) { Text("توقف") }
+                    } else {
+                        OutlinedButton(
+                            enabled = transcribingPath == null,
+                            onClick = {
+                                transcriptionError = ""
+                                transcriptionStage = ""
+                                transcribingPath = path
+                                val engine = VoiceFileTranscriber(context.applicationContext)
+                                recognizer = engine
+                                engine.transcribe(File(path),
+                                    onStage = { transcriptionStage = it },
+                                    onFinish = { text, error ->
+                                        transcribingPath = null
+                                        recognizer = null
+                                        if (error != null) transcriptionError = error
+                                        else if (text != null) {
+                                            editableTranscript = text
+                                            transcriptionResult = text
+                                        }
+                                    }
+                                )
+                            }
+                        ) { Text("تبدیل به متن") }
+                    }
                     if (existing != null && !existing.applied) {
                         Button(onClick = { review = existing }) { Text("بازبینی") }
                     } else if (upload?.status == "failed") {
@@ -130,13 +173,57 @@ internal fun VoiceAgentPanel(
                         OutlinedButton(onClick = { showSettings = true }) { Text("تنظیم") }
                     }
                 }
+                if (transcribingPath == path) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    Text(transcriptionStage.ifBlank { "در حال آماده‌سازی فایل…" },
+                        style = MaterialTheme.typography.labelSmall)
+                }
                 HorizontalDivider()
+            }
+            if (transcriptionError.isNotBlank()) {
+                Text(transcriptionError,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error)
             }
             if (errorText.isNotBlank()) {
                 Text(errorText, style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error)
             }
         }
+    }
+
+    if (transcriptionResult != null) {
+        AlertDialog(
+            onDismissRequest = { transcriptionResult = null },
+            title = { Text("متن تشخیص‌داده‌شده از فایل") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("نتیجه آزمایشی است. نام‌ها و شماره‌ها را بررسی کن. بعضی سرویس‌های گوشی به‌جای فایل، میکروفون را فعال می‌کنند.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.secondary)
+                    OutlinedTextField(
+                        value = editableTranscript,
+                        onValueChange = { editableTranscript = it },
+                        label = { Text("متن قابل ویرایش") },
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 140.dp, max = 350.dp)
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    if (editableTranscript.isNotBlank()) onTranscribed(editableTranscript)
+                    transcriptionResult = null
+                }) { Text("افزودن به یادداشت مخاطب") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("متن ویس پویارا", editableTranscript))
+                    transcriptionResult = null
+                    Toast.makeText(context, "متن کپی شد", Toast.LENGTH_SHORT).show()
+                }) { Text("کپی متن") }
+            }
+        )
     }
 
     if (showSettings) {
