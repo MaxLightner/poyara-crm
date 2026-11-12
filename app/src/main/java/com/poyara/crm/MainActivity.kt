@@ -955,22 +955,12 @@ private fun CrmHome(initialRecordId: Long) {
                             if (parts.size == 2 && parts[0] == "audio") parts[1] else null
                         },
                     onTranscribed = { transcript ->
-                        val extracted = VoiceLocalFacts.extract(transcript)
-                        val nextName = personName.ifBlank { extracted.personName }
-                        val nextPhone = phone.ifBlank { extracted.phone }
-                        val nextCompany = companyName.ifBlank { extracted.company }
+                        // Store exactly what was said. Entity extraction belongs to the
+                        // optional future server step; do not guess a contact's identity.
                         val updatedNote = if (note.contains(transcript)) note else
                             listOf(note, transcript).filter { it.isNotBlank() }.joinToString("\n")
-                        personName = nextName
-                        phone = nextPhone
-                        companyName = nextCompany
                         note = updatedNote
-                        save(
-                            newName = nextName,
-                            newPhone = nextPhone,
-                            newCompany = nextCompany,
-                            newNote = updatedNote
-                        )
+                        save(newNote = updatedNote)
                     }
                 )
 
