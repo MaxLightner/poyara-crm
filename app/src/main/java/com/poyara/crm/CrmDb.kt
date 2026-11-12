@@ -50,11 +50,20 @@ data class VoiceReview(
     val applied: Boolean
 )
 
+data class VoiceUploadJob(
+    val jobId: String,
+    val audioPath: String,
+    val entryId: Long,
+    val status: String,
+    val attempts: Int,
+    val lastError: String
+)
+
 /**
  * Local-first storage: no Contacts Provider access and no network dependency.
  * A text edit writes immediately; image/voice files remain in private app storage.
  */
-class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null, 7) {
+class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null, 8) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             """CREATE TABLE entries (
@@ -87,6 +96,7 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
         createCommunicationsTables(db)
         createRemindersTable(db)
         createVoiceReviewsTable(db)
+        createVoiceUploadTable(db)
     }
 
     private fun createNotesTable(db: SQLiteDatabase) {
@@ -112,6 +122,85 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
             createRemindersTable(db)
         }
         if (oldVersion < 7) createVoiceReviewsTable(db)
+        if (oldVersion < 8) createVoiceUploadTable(db)
+    }
+
+    private fun createVoiceUploadTable(db: SQLiteDatabase) {
+        db.execSQL("""CREATE TABLE IF NOT EXISTS voice_uploads (
+            job_id TEXT PRIMARY KEY,
+            audio_path TEXT NOT NULL UNIQUE,
+            entry_id INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'pending',
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT NOT NULL DEFAULT '',
+            updated_at INTEGER NOT NULL
+        )""")
+        db.execSQL("CREATE INDEX IF NOT EXISTS voice_uploads_status ON voice_uploads(status)")
+    }
+
+    fun voiceUpload(audioPath: String): VoiceUploadJob? =
+        readableDatabase.query("voice_uploads", null, "audio_path=?",
+            arrayOf(audioPath), null, null, null).use { cur ->
+            if (!cur.moveToFirst()) null else VoiceUploadJob(
+                cur.getString(cur.getColumnIndexOrThrow("job_id")),
+                cur.getString(cur.getColumnIndexOrThrow("audio_path")),
+                cur.getLong(cur.getColumnIndexOrThrow("entry_id")),
+                cur.getString(cur.getColumnIndexOrThrow("status")),
+                cur.getInt(cur.getColumnIndexOrThrow("attempts")),
+                cur.getString(cur.getColumnIndexOrThrow("last_error"))
+            )
+        }
+
+    fun queueVoiceUpload(audioPath: String, entryId: Long = 0L): VoiceUploadJob {
+        val previous = voiceUpload(audioPath)
+        if (previous != null) return previous
+        require(java.io.File(audioPath).isFile) { "فایل ویس پیدا نشد" }
+        val id = java.util.UUID.randomUUID().toString()
+        writableDatabase.insertOrThrow("voice_uploads", null, ContentValues().apply {
+            put("job_id", id)
+            put("audio_path", audioPath)
+            put("entry_id", entryId)
+            put("status", "pending")
+            put("attempts", 0)
+            put("last_error", "")
+            put("updated_at", System.currentTimeMillis())
+        })
+        return voiceUpload(audioPath)!!
+    }
+
+    fun pendingVoiceUploads(): List<VoiceUploadJob> {
+        val out = mutableListOf<VoiceUploadJob>()
+        readableDatabase.query(
+            "voice_uploads", arrayOf("audio_path"),
+            "status IN ('pending','uploading','retry')", null, null, null, "updated_at ASC"
+        ).use { cur ->
+            while (cur.moveToNext()) voiceUpload(cur.getString(0))?.let { out += it }
+        }
+        return out
+    }
+
+    fun markVoiceUpload(audioPath: String, status: String, error: String = "") {
+        val values = ContentValues().apply {
+            put("status", status)
+            put("last_error", error.take(350))
+            put("updated_at", System.currentTimeMillis())
+        }
+        writableDatabase.update("voice_uploads", values, "audio_path=?", arrayOf(audioPath))
+    }
+
+    fun retryVoiceUpload(audioPath: String) {
+        writableDatabase.update("voice_uploads", ContentValues().apply {
+            put("status", "pending")
+            put("last_error", "")
+            put("updated_at", System.currentTimeMillis())
+        }, "audio_path=? AND status='failed'", arrayOf(audioPath))
+    }
+
+    fun incrementVoiceAttempts(audioPath: String) {
+        writableDatabase.execSQL(
+            "UPDATE voice_uploads SET attempts=attempts+1, updated_at=? WHERE audio_path=?",
+            arrayOf(System.currentTimeMillis(), audioPath)
+        )
     }
 
     private fun createVoiceReviewsTable(db: SQLiteDatabase) {
