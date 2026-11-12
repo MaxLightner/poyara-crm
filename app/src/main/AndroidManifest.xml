@@ -10,6 +10,11 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
+    <!-- Allow SpeechRecognizer discovery on Android 11+ under package visibility. -->
+    <queries>
+        <intent><action android:name="android.speech.RecognitionService" /></intent>
+    </queries>
+
     <application
         android:allowBackup="false"
         android:label="پویارا CRM"
