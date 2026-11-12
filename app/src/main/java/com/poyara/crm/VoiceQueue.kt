@@ -24,34 +24,29 @@ internal object VoiceQueue {
     fun record(context: Context, file: File, entryId: Long) {
         val db = CrmDb(context.applicationContext)
         try {
-            val job = db.queueVoiceUpload(file.absolutePath, entryId, PoyaraAuth(context).email)
-            if (PoyaraAuth(context).hasSession && db.voiceReview(file.absolutePath) == null) {
+            val job = db.queueVoiceUpload(file.absolutePath, entryId)
+            if (VoiceServerSettings(context).configured && db.voiceReview(file.absolutePath) == null) {
                 enqueue(context, job, replace = false)
             }
         } finally { db.close() }
     }
 
     fun schedulePending(context: Context) {
-        val auth = PoyaraAuth(context)
-        if (!auth.hasSession) return
+        if (!VoiceServerSettings(context).configured) return
         val db = CrmDb(context.applicationContext)
         try {
             db.pendingVoiceUploads().forEach { job ->
-                if ((job.ownerEmail.isBlank() || job.ownerEmail.equals(auth.email, true)) &&
-                    db.voiceReview(job.audioPath) == null)
+                if (db.voiceReview(job.audioPath) == null)
                     enqueue(context, job, replace = false)
             }
         } finally { db.close() }
     }
 
     fun retry(context: Context, audioPath: String) {
-        if (!PoyaraAuth(context).hasSession) return
+        if (!VoiceServerSettings(context).configured) return
         val db = CrmDb(context.applicationContext)
         try {
-            val previous = db.voiceUpload(audioPath)
-                ?: db.queueVoiceUpload(audioPath, ownerEmail = PoyaraAuth(context).email)
-            if (previous.ownerEmail.isNotBlank() &&
-                !previous.ownerEmail.equals(PoyaraAuth(context).email, true)) return
+            db.voiceUpload(audioPath) ?: db.queueVoiceUpload(audioPath)
             db.retryVoiceUpload(audioPath)
             db.voiceUpload(audioPath)?.let { enqueue(context, it, replace = true) }
         } finally { db.close() }
@@ -90,23 +85,26 @@ internal class VoiceUploadWorker(
                 db.markVoiceUpload(path, "failed", "فایل صوتی روی گوشی پیدا نشد")
                 return Result.failure()
             }
-            // Never upload a previous user's private recording with a different login.
-            val auth = PoyaraAuth(applicationContext)
-            if (job.ownerEmail.isNotBlank() &&
-                !job.ownerEmail.equals(auth.email, true)) {
-                db.markVoiceUpload(path, "pending", "این ویس متعلق به حساب دیگری است")
-                return Result.success()
-            }
-            // Without an account, preserve the job locally. Login reschedules it.
-            if (!auth.hasSession) {
-                db.markVoiceUpload(path, "pending", "برای ارسال، با ایمیل وارد شو")
+            // No email account: only this device's explicitly paired HTTPS server.
+            if (!VoiceServerSettings(applicationContext).configured) {
+                db.markVoiceUpload(path, "pending", "سرور صوتی هنوز تنظیم نشده")
                 return Result.success()
             }
             db.markVoiceUpload(path, "uploading")
             db.incrementVoiceAttempts(path)
             val candidates = db.all().filter { it.id == job.entryId }.take(1)
             val response: JSONObject = try {
-                VoiceAgentClient(applicationContext).analyze(file, job.jobId, candidates)
+                VoiceAgentClient(applicationContext).analyze(file, job.jobId, candidates) { stage, percent ->
+                    val detail = when(stage) {
+                        "uploading" -> "ارسال فایل: " + (percent ?: 0) + "٪"
+                        "queued" -> "فایل ارسال شد؛ در صف تحلیل سرور"
+                        "transcribing" -> "سرور: تبدیل گفتار به متن"
+                        "extracting" -> "سرور: استخراج مخاطب و قرار از متن"
+                        "complete" -> "نتیجه برای بازبینی آماده است"
+                        else -> "سرور در حال پردازش است"
+                    }
+                    db.markVoiceUpload(path, "uploading", detail)
+                }
             } catch (error: VoiceHttpException) {
                 return when (error.statusCode) {
                     400, 413, 415, 422 -> {
@@ -114,7 +112,7 @@ internal class VoiceUploadWorker(
                         Result.failure()
                     }
                     401, 403 -> {
-                        db.markVoiceUpload(path, "pending", "نشست ورود معتبر نیست؛ دوباره وارد شو")
+                        db.markVoiceUpload(path, "failed", "کد اتصال سرور معتبر نیست")
                         Result.success()
                     }
                     else -> {
