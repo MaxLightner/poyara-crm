@@ -43,11 +43,28 @@ data class WorkReminder(
     val done: Boolean
 )
 
+data class VoiceReview(
+    val jobId: String,
+    val audioPath: String,
+    val resultJson: String,
+    val applied: Boolean
+)
+
+data class VoiceUploadJob(
+    val jobId: String,
+    val audioPath: String,
+    val entryId: Long,
+    val ownerEmail: String,
+    val status: String,
+    val attempts: Int,
+    val lastError: String
+)
+
 /**
  * Local-first storage: no Contacts Provider access and no network dependency.
  * A text edit writes immediately; image/voice files remain in private app storage.
  */
-class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null, 6) {
+class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null, 8) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             """CREATE TABLE entries (
@@ -79,6 +96,8 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
         createNotesTable(db)
         createCommunicationsTables(db)
         createRemindersTable(db)
+        createVoiceReviewsTable(db)
+        createVoiceUploadTable(db)
     }
 
     private fun createNotesTable(db: SQLiteDatabase) {
@@ -103,7 +122,148 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
             db.execSQL("ALTER TABLE entries ADD COLUMN group_id INTEGER")
             createRemindersTable(db)
         }
+        if (oldVersion < 7) createVoiceReviewsTable(db)
+        if (oldVersion < 8) createVoiceUploadTable(db)
     }
+
+    private fun createVoiceUploadTable(db: SQLiteDatabase) {
+        db.execSQL("""CREATE TABLE IF NOT EXISTS voice_uploads (
+            job_id TEXT PRIMARY KEY,
+            audio_path TEXT NOT NULL UNIQUE,
+            entry_id INTEGER NOT NULL DEFAULT 0,
+            owner_email TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'pending',
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT NOT NULL DEFAULT '',
+            updated_at INTEGER NOT NULL
+        )""")
+        db.execSQL("CREATE INDEX IF NOT EXISTS voice_uploads_status ON voice_uploads(status)")
+    }
+
+    fun voiceUpload(audioPath: String): VoiceUploadJob? =
+        readableDatabase.query("voice_uploads", null, "audio_path=?",
+            arrayOf(audioPath), null, null, null).use { cur ->
+            if (!cur.moveToFirst()) null else VoiceUploadJob(
+                cur.getString(cur.getColumnIndexOrThrow("job_id")),
+                cur.getString(cur.getColumnIndexOrThrow("audio_path")),
+                cur.getLong(cur.getColumnIndexOrThrow("entry_id")),
+                cur.getString(cur.getColumnIndexOrThrow("owner_email")),
+                cur.getString(cur.getColumnIndexOrThrow("status")),
+                cur.getInt(cur.getColumnIndexOrThrow("attempts")),
+                cur.getString(cur.getColumnIndexOrThrow("last_error"))
+            )
+        }
+
+    fun queueVoiceUpload(
+        audioPath: String, entryId: Long = 0L, ownerEmail: String = ""
+    ): VoiceUploadJob {
+        val previous = voiceUpload(audioPath)
+        if (previous != null) return previous
+        require(java.io.File(audioPath).isFile) { "فایل ویس پیدا نشد" }
+        val id = java.util.UUID.randomUUID().toString()
+        writableDatabase.insertOrThrow("voice_uploads", null, ContentValues().apply {
+            put("job_id", id)
+            put("audio_path", audioPath)
+            put("entry_id", entryId)
+            put("owner_email", ownerEmail.trim().lowercase(java.util.Locale.ROOT))
+            put("status", "pending")
+            put("attempts", 0)
+            put("last_error", "")
+            put("updated_at", System.currentTimeMillis())
+        })
+        return voiceUpload(audioPath)!!
+    }
+
+    fun linkVoiceUploadToEntry(audioPath: String, entryId: Long) {
+        require(entryId > 0)
+        writableDatabase.update(
+            "voice_uploads", ContentValues().apply { put("entry_id", entryId) },
+            "audio_path=? AND entry_id=0", arrayOf(audioPath)
+        )
+    }
+
+    fun pendingVoiceUploads(): List<VoiceUploadJob> {
+        val out = mutableListOf<VoiceUploadJob>()
+        readableDatabase.query(
+            "voice_uploads", arrayOf("audio_path"),
+            "status IN ('pending','uploading','retry')", null, null, null, "updated_at ASC"
+        ).use { cur ->
+            while (cur.moveToNext()) voiceUpload(cur.getString(0))?.let { out += it }
+        }
+        return out
+    }
+
+    fun markVoiceUpload(audioPath: String, status: String, error: String = "") {
+        val values = ContentValues().apply {
+            put("status", status)
+            put("last_error", error.take(350))
+            put("updated_at", System.currentTimeMillis())
+        }
+        writableDatabase.update("voice_uploads", values, "audio_path=?", arrayOf(audioPath))
+    }
+
+    fun retryVoiceUpload(audioPath: String) {
+        writableDatabase.update("voice_uploads", ContentValues().apply {
+            put("status", "pending")
+            put("last_error", "")
+            put("updated_at", System.currentTimeMillis())
+        }, "audio_path=? AND status='failed'", arrayOf(audioPath))
+    }
+
+    fun incrementVoiceAttempts(audioPath: String) {
+        writableDatabase.execSQL(
+            "UPDATE voice_uploads SET attempts=attempts+1, updated_at=? WHERE audio_path=?",
+            arrayOf(System.currentTimeMillis(), audioPath)
+        )
+    }
+
+    private fun createVoiceReviewsTable(db: SQLiteDatabase) {
+        db.execSQL("""CREATE TABLE IF NOT EXISTS voice_reviews (
+            job_id TEXT PRIMARY KEY,
+            audio_path TEXT NOT NULL UNIQUE,
+            result_json TEXT NOT NULL,
+            applied INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL
+        )""")
+        db.execSQL("CREATE INDEX IF NOT EXISTS voice_reviews_audio ON voice_reviews(audio_path)")
+    }
+
+    fun voiceReview(audioPath: String): VoiceReview? =
+        readableDatabase.query(
+            "voice_reviews", null, "audio_path=?", arrayOf(audioPath),
+            null, null, null
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) null else VoiceReview(
+                cursor.getString(cursor.getColumnIndexOrThrow("job_id")),
+                cursor.getString(cursor.getColumnIndexOrThrow("audio_path")),
+                cursor.getString(cursor.getColumnIndexOrThrow("result_json")),
+                cursor.getInt(cursor.getColumnIndexOrThrow("applied")) == 1
+            )
+        }
+
+    fun saveVoiceReview(jobId: String, audioPath: String, json: String) {
+        require(audioPath.isNotBlank() && json.isNotBlank())
+        val previous = voiceReview(audioPath)
+        require(previous?.applied != true) { "این ویس قبلاً وارد پرونده‌ها شده است" }
+        writableDatabase.insertWithOnConflict(
+            "voice_reviews", null, ContentValues().apply {
+                put("job_id", jobId)
+                put("audio_path", audioPath)
+                put("result_json", json)
+                put("applied", 0)
+                put("updated_at", System.currentTimeMillis())
+            }, SQLiteDatabase.CONFLICT_REPLACE
+        )
+    }
+
+    fun markVoiceReviewApplied(jobId: String) {
+        val count = writableDatabase.update(
+            "voice_reviews", ContentValues().apply { put("applied", 1) },
+            "job_id=? AND applied=0", arrayOf(jobId)
+        )
+        require(count == 1) { "نتیجه صوتی قبلاً وارد شده یا پیدا نشد" }
+    }
+
 
     private fun createRemindersTable(db: SQLiteDatabase) {
         db.execSQL("""CREATE TABLE IF NOT EXISTS reminders (

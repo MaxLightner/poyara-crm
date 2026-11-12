@@ -165,6 +165,7 @@ private fun CrmHome(initialRecordId: Long) {
     }
     LaunchedEffect(Unit) {
         ReminderScheduler.createChannel(context)
+        VoiceQueue.schedulePending(context)
         callerEnabled = if (Build.VERSION.SDK_INT >= 29) {
             roleManager?.isRoleHeld(RoleManager.ROLE_CALL_SCREENING) == true
         } else false
@@ -217,6 +218,7 @@ private fun CrmHome(initialRecordId: Long) {
             val parts = encoded.split("|", limit = 2)
             if (parts.size == 2 && File(parts[1]).isFile) {
                 db.addAttachment(id, parts[0], parts[1])
+                if (parts[0] == "audio") db.linkVoiceUploadToEntry(parts[1], id)
             }
         }
         if (draftLatitude != null && draftLongitude != null) {
@@ -377,6 +379,8 @@ private fun CrmHome(initialRecordId: Long) {
             } else {
                 addDraftAttachment("audio", target)
             }
+            // Queue the preserved M4A immediately; WorkManager waits for internet.
+            VoiceQueue.record(context, target, recordId)
         }
     }
 
@@ -829,6 +833,19 @@ private fun CrmHome(initialRecordId: Long) {
                     ) { Text(if (isRecording) "■ پایان ضبط" else "● ضبط صوت") }
                     OutlinedButton(onClick = { takePhoto() }) { Text("📷 عکس فوری") }
                 }
+
+                VoiceAgentPanel(
+                    db = db,
+                    audioPaths = files.filter { it.type == "audio" }.map { it.filePath } +
+                        draftAttachments.mapNotNull { saved ->
+                            val parts = saved.split("|", limit = 2)
+                            if (parts.size == 2 && parts[0] == "audio") parts[1] else null
+                        },
+                    // Never upload unrelated customer records to the AI service.
+                    // Matching is performed locally after the transcript is returned.
+                    contacts = allEntries.filter { it.id == recordId },
+                    onImported = { refresh() }
+                )
 
                 if (files.isNotEmpty()) {
                     Text("پیوست‌ها (${files.size})", fontWeight = FontWeight.Bold)
