@@ -174,6 +174,14 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
         return voiceUpload(audioPath)!!
     }
 
+    fun linkVoiceUploadToEntry(audioPath: String, entryId: Long) {
+        require(entryId > 0)
+        writableDatabase.update(
+            "voice_uploads", ContentValues().apply { put("entry_id", entryId) },
+            "audio_path=? AND entry_id=0", arrayOf(audioPath)
+        )
+    }
+
     fun pendingVoiceUploads(): List<VoiceUploadJob> {
         val out = mutableListOf<VoiceUploadJob>()
         readableDatabase.query(
