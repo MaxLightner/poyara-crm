@@ -11,7 +11,7 @@ On a local PC or server:
 
 ```bash
 # Install Ollama: https://ollama.com/download
-ollama pull qwen2.5:3b
+ollama pull qwen2.5:7b
 cd server
 python3 -m venv .venv
 . .venv/bin/activate
@@ -57,3 +57,13 @@ The phone, not the LLM, applies CRM writes.
 - One worker processes one job at a time; actual speed depends on server CPU/GPU and voice length. Do not promise a number of seconds until benchmarked.
 - A first deployment has **not** been made to a self-hosted inference machine; no server URL or pairing token has been provided. GitHub code alone does not activate remote AI.
 - The Supabase project's older OpenAI-dependent function is NOT used by this branch. Do not remove old data while migrating.
+
+## نتیجه تست مدل‌ها — ۲۰۲۶-۱۱-۱۲
+
+یک تست موقت رایگان در GitHub Actions روی ۴ vCPU و ۱۶ GB RAM اجرا شد:
+
+- Whisper small روی یک نمونه صوت مصنوعی فارسی عمومی: حدود ۶٫۶ ثانیه، با چند خطای تشخیص گفتار.
+- Qwen2.5 1.5B روی متن محاوره‌ای نمونه: حدود ۳۱ ثانیه و خطاهای مهم در تشخیص افراد/شرکت/تاریخ؛ مناسب استفاده مستقیم نیست.
+- Qwen2.5 7B روی همان متن نمونه: حدود ۴۸٫۷ ثانیه؛ دو نفر رضایی و محمدی و مجموعه مبلمان آریا، شماره مدیر و قرار سه‌شنبه ساعت ۱۵:۳۰ را درست استخراج کرد و برای تاریخ مبهم سؤال گذاشت.
+
+دو مرحله با ورودی‌های **جداگانه** تست شده‌اند؛ این یک تست end-to-end از گوشی یا از ویس واقعی کاربر نیست. معیار خرید سرور باید پس از نمونه‌های محاوره‌ای واقعی و بررسی CPU/GPU تعیین شود. GitHub Actions برای تست موقت است و نباید به عنوان وب‌سرور دائمی استفاده شود.
