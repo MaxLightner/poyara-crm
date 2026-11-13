@@ -1,57 +1,88 @@
-# پویارا — اتصال مرکزی به Cloudflare Workers AI
+# راه‌اندازی یک‌باره Agent مرکزی پویارا 0.21
 
-وضعیت این شاخه: Worker و روند CI آماده‌سازی شده‌اند؛ **بدون اتصال مالک Cloudflare، هنوز
-روی حساب او استقرار واقعی نشده و اپلیکیشن اندروید هنوز از این Worker استفاده نمی‌کند.**
-از دادن کلید محرمانه در چت یا ثبت کلید در فایل سورس خودداری کنید.
+این کد در GitHub آماده است؛ **تا زمانی که Secrets در GitHub ثبت و Workflow اجرا نشود،
+سرویس روی Cloudflare فعال و APK متصل منتشر نشده است.** ساخت بدون Secret به‌صورت
+پیش‌نمایش آفلاین انجام می‌شود و در انتشار اصلی عرضه نمی‌شود.
 
-## اطلاعات مورد نیاز مالک حساب
+## کارهایی که فقط مالک حساب باید انجام دهد
 
-۱. در [Cloudflare Dashboard](https://dash.cloudflare.com) وارد حسابی که با Google ساختید شوید.
-از صفحه Account Home یا بخش Workers & Pages، **Account ID** را کپی کنید.
-این شناسه محرمانه نیست و برای مسیر استقرار لازم است.
+**Account ID قبلاً در `cloudflare-worker/wrangler.jsonc` ثبت شده است و نباید دوباره در گوشی وارد شود.**
 
-۲. از [GitHub → Secrets and variables → Actions](https://github.com/MaxLightner/poyara-crm/settings/secrets/actions)
-برای مخزن پویارا، دو **Repository Secret** بسازید:
+### ۱. کلیدهای قبلی را باطل کنید
 
-- `CLOUDFLARE_ACCOUNT_ID`: همان Account ID.
-- `CLOUDFLARE_API_TOKEN`: توکن اختصاصی از Cloudflare Dashboard → Account API tokens → Create Token
-  با مجوز محدود «Edit Cloudflare Workers» فقط برای همین حساب.
+توکن Cloudflare و R2 S3 Access Key که در مکالمه به‌صورت متن عادی ارسال شده‌اند
+دیگر محرمانه محسوب نمی‌شوند. از Cloudflare Dashboard آنها را revoke کنید.
+کلید S3 به این پروژه و Workers AI احتیاجی ندارد و **نباید به GitHub یا گوشی داده شود**.
 
-۳. برای جلوگیری از استقرار ناخواسته، در صفحه Repository Variables یک متغیر
-`POYARA_CLOUD_BACKEND_ENABLED=true` بگذارید. این کار را فقط بعد از آماده‌سازی
-اسرار استقرار انجام دهید.
+### ۲. فقط یک توکن جدید مخصوص انتشار Worker بسازید
 
-۴. پس از نخستین استقرار Worker، یک secret مستقل به نام
-`POYARA_APP_ACCESS_KEY` با مقدار تصادفی طولانی (حداقل ۳۲ کاراکتر)
-برای خود Worker تعریف می‌شود. این کد **توکن مدیریتی Cloudflare نیست**؛
-کاربردش فقط محدودکردن استفاده از Agent است. نباید به شکل باز در فایل
-GitHub یا APK منتشر شود؛ شیوه امن جفت‌سازی دستگاه‌های همکار جداگانه تکمیل می‌شود.
+از Cloudflare Dashboard → Account API Tokens → Create Token، توکن محدود
+به همین Account با مجوز **Edit Cloudflare Workers** ایجاد کنید. این توکن
+برای Wrangler و GitHub Actions است، نه برای اجرا در APK.
 
-۵. سپس `https://<worker-name>.<subdomain>.workers.dev/health` را
-بررسی کنید؛ نام و زیردامنه واقعی از خروجی استقرار مشخص می‌شوند.
-نباید آدرس Worker را حدس زد.
+در GitHub مخزن پویارا، Settings → Secrets and variables → Actions،
+در قسمت **Repository Secrets** دو مورد زیر را بسازید:
 
-## مدل و اجرا
+| Name | Value |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | توکن *جدید* با مجوز Edit Cloudflare Workers |
+| `POYARA_APP_ACCESS_KEY` | یک رمز تصادفی مستقل ۶۴ کاراکتری، مثلاً خروجی `openssl rand -hex 32` |
 
-- Worker دارای binding بومی `AI` است. مدل متنی
-  `@cf/zai-org/glm-4.7-flash` مستقیماً روی Cloudflare اجرا می‌شود.
-- توکن Cloudflare فقط در GitHub Secrets برای انتشار Worker باقی می‌ماند؛
-  نه در گوشی کاربر و نه در پاسخ Worker.
-- نقطه ورود مرکزی `POST /v1/text/analyze` پیشنهادهای JSON برای CRM برمی‌گرداند؛
-  خود Worker تغییر پایگاه داده را اجرا نمی‌کند.
-- موتور Kotlin در گوشی وظیفه اعتبارسنجی دستور، انتخاب مخاطب و ثبت یادآوری را دارد.
-- تماس و کار با مخاطبین بدون اینترنت همچنان محلی‌اند.
-- در صورت نیاز برای فایل صوتی، رونویسی با Whisper باید جداگانه توسعه و آزمون شود.
+**مقدارها را در چت یا فایل عمومی GitHub قرار ندهید.** رمز دوم
+فقط برای محدودکردن دسترسی اپ به Agent است و از توکن اصلی Cloudflare
+جداست. برای استفاده آزمایشی داخل APK قرار می‌گیرد و قابل استخراج است؛
+به همین دلیل Worker محدودیت درخواست دارد. برای انتشار عمومی باید
+احراز هویت دستگاهی/سازمانی اضافه شود.
 
-## وضعیت راه‌اندازی و مراقبت
+### ۳. مجوز انتشار را روشن کنید
 
-- ثبت‌نام با Google در Cloudflare به‌معنی ایجاد API Token یا فعال‌شدن خودکار Worker نیست.
-- Cloudflare محدودیت روزانه مصرف، محدودیت منطقه و سیاست‌های سوءاستفاده دارد.
-- محافظت از endpoint ضروری است، حتی اگر اطلاعات مشتری محرمانه نباشد؛
-  درخواست عمومی می‌تواند سهمیه رایگان Agent را تمام کند.
-- قبل از توزیع APK به همکاران، اتصال Android به Worker واقعی، احراز هویت
-  دستگاه‌ها، نرخ‌محدودسازی، روزهای قطع اینترنت و تجربه ویس فارسی باید آزمایش شوند.
+در همان صفحه GitHub، از قسمت Variables یک Repository Variable بسازید:
 
-مراجع رسمی:
-https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/
-https://developers.cloudflare.com/workers-ai/models/glm-4.7-flash/
+`POYARA_CLOUD_BACKEND_ENABLED=true`
+
+سپس GitHub → Actions → **Deploy central POYARA Workers AI backend**
+→ Run workflow → branch main.
+
+این Workflow به ترتیب:
+
+1. تست‌های Worker را اجرا می‌کند؛
+2. با توکن Workers، Worker را روی حساب شما منتشر می‌کند؛
+3. رمز مستقل اپ را به صورت Secret روی Worker ذخیره می‌کند؛
+4. از خروجی واقعی Wrangler، آدرس HTTPS سرویس را می‌گیرد؛
+5. APK اندروید پویارا را **بدون هیچ کلید Cloudflare** و با URL واقعی Worker
+   و رمز محدود اپ می‌سازد؛
+6. نسخه قابل نصب را در GitHub Releases منتشر می‌کند.
+
+اگر Workflow در مرحله Deploy خطای 403 داد، احتمالاً توکن ایجادشده
+برای R2 بوده یا مجوز Workers Edit ندارد. اگر URL تولید نشد،
+Workers.dev را برای همان حساب فعال کنید و Workflow را دوباره اجرا کنید.
+
+### ۴. آزمون گوشی
+
+در APK منتشرشده، هیچ گزینه‌ای برای وارد کردن Account ID یا API Token
+وجود ندارد. در تنظیمات فقط اجازه یک‌باره ارسال متن/ویس و بررسی اتصال
+Agent دیده می‌شود. تمام افراد تیم از مدل یکسان در حساب Cloudflare استفاده می‌کنند؛
+اما **پایگاه داده مخاطبین همچنان محلی/Google Contacts است و صرفاً با
+اشتراک Agent، همه فایل‌های CRM همگام‌سازی نمی‌شوند.**
+
+## معماری و حدود
+
+- مدل تحلیل متن: `@cf/zai-org/glm-4.7-flash` با Workers AI binding
+- رونویسی اختیاری M4A: `@cf/openai/whisper`، محدود به ۴ مگابایت در هر ویس
+- URL: `/v1/text/analyze` و `/v1/audio/transcribe`
+- دسترسی: رمز مجزای اپ، HTTPS و محدودسازی ۳۰ درخواست در هر دقیقه
+  برای هر IP (محدودسازی تقریبی Cloudflare)
+- اپ فقط دستورهای مجاز CRM را اجرا می‌کند؛ مدل اجازه SQL مستقیم یا
+  حذف نامحدود ندارد. داده‌های مبهم نیاز به تأیید دارند.
+- طرح Workers AI رایگان روزانه ۱۰٬۰۰۰ Neurons سقف دارد. شبکه ایران
+  و کیفیت Whisper فارسی روی گوشی حقیقی هنوز آزمایش نشده است.
+- امضای APK این نسخه همچنان آزمایشی است؛ پیش از هر نصب ناسازگار
+  نسخه قبلی از CRM پشتیبان قابل بازیابی بگیرید.
+
+## لینک‌های تنظیمات
+
+Cloudflare Dashboard: https://dash.cloudflare.com/
+GitHub Secrets: https://github.com/MaxLightner/poyara-crm/settings/secrets/actions
+GitHub Actions: https://github.com/MaxLightner/poyara-crm/actions
+GitHub Releases: https://github.com/MaxLightner/poyara-crm/releases
+Cloudflare deploy guide: https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/
