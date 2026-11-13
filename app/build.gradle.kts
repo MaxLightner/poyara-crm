@@ -50,3 +50,9 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
+
+// Keep Android's standard APK workflow while ensuring the local Persian voice
+// parser tests run before a new build is delivered.
+tasks.matching { it.name == "assembleDebug" }.configureEach {
+    dependsOn("testDebugUnitTest")
+}
