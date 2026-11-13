@@ -64,7 +64,14 @@ class CrmCallScreeningService : CallScreeningService() {
             entry.company.takeIf { it.isNotBlank() }?.let { "مجموعه: " + it },
             entry.category.takeIf { it.isNotBlank() }?.let { "حوزه: " + it }
         )
-        val summary = facts.joinToString(" · ")
+        val missing = listOfNotNull(
+            "سمت".takeIf { entry.role.isBlank() },
+            "گروه فعالیت".takeIf { entry.category.isBlank() }
+        )
+        val summary = if (missing.isNotEmpty())
+            "اطلاعات ناقص: " + missing.joinToString("، ") + " · " +
+                facts.joinToString(" · ")
+        else facts.joinToString(" · ")
             .ifBlank { "مشتری ثبت‌شده در پویارا" }
         val info = listOf(
             "شماره: " + number,
