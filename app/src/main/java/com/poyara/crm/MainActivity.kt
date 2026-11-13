@@ -116,6 +116,8 @@ private fun CrmHome(initialRecordId: Long) {
     var googleAccount by remember { mutableStateOf(googlePrefs.getString("account", "").orEmpty()) }
     var googleSyncBusy by remember { mutableStateOf(false) }
     val textAgentSettings = remember { VoiceServerSettings(context.applicationContext) }
+    val directGeminiSettings = remember { GeminiLocalSettings(context.applicationContext) }
+    var directGeminiKey by remember { mutableStateOf("") }
     val agentPrefs = remember { context.getSharedPreferences("poyara_text_agent", Context.MODE_PRIVATE) }
     var agentPrivacyConsent by remember {
         mutableStateOf(agentPrefs.getBoolean("cloud_text_consent_v1", false))
@@ -366,7 +368,8 @@ private fun CrmHome(initialRecordId: Long) {
     fun addSpeechToCapture(transcript: String) {
         if (transcript.isBlank() && pendingVoiceFilePath.isBlank()) return
         val actions = PersianVoiceInterpreter.parse(
-            if (agentOptIn && textAgentSettings.configured) "" else transcript,
+            if (agentOptIn && (directGeminiSettings.configured || textAgentSettings.configured))
+                "" else transcript,
             personName, companyName, phone)
         val previousName = personName
         val previousCompany = companyName
@@ -528,23 +531,32 @@ private fun CrmHome(initialRecordId: Long) {
         lastVoiceActions = (feedback + warnings).distinct().ifEmpty {
             listOf("متن گفتار ذخیره شد؛ دستور روشن دیگری برای اعمال پیدا نشد.")
         }
-        if (agentOptIn && agentPrivacyConsent && textAgentSettings.configured && !agentBusy) {
+        if (agentOptIn && agentPrivacyConsent &&
+            (directGeminiSettings.configured || textAgentSettings.configured) &&
+            !agentBusy) {
             val sourceEntryId = entryId
             val sourceName = personName
             val sourcePhone = phone
             agentBusy = true
             coroutineScope.launch {
                 val result = withContext(Dispatchers.IO) {
-                    runCatching { CrmTextAgentClient(context.applicationContext)
-                        .let { client ->
-                            val audio = pendingVoiceFilePath.takeIf { it.isNotBlank() }
-                                ?.let { File(it) }?.takeIf { it.isFile }
-                            val sameContact = db.all().filter { it.id == sourceEntryId }
-                            if (audio != null)
-                                client.analyzeAudio(audio, transcript, sameContact,
-                                    db.allReminders().filter { it.entryId == sourceEntryId })
-                            else client.analyze(transcript, sameContact)
-                        } }
+                    runCatching {
+                        val audio = pendingVoiceFilePath.takeIf { it.isNotBlank() }
+                            ?.let { File(it) }?.takeIf { it.isFile }
+                        val sameContact = db.all().filter { it.id == sourceEntryId }
+                        val sameReminders = db.allReminders()
+                            .filter { it.entryId == sourceEntryId }
+                        if (directGeminiSettings.configured) {
+                            GeminiDirectClient(context.applicationContext).analyze(
+                                transcript, audio, sameContact.firstOrNull(), sameReminders)
+                        } else {
+                            CrmTextAgentClient(context.applicationContext).let { client ->
+                                if (audio != null)
+                                    client.analyzeAudio(audio, transcript, sameContact, sameReminders)
+                                else client.analyze(transcript, sameContact)
+                            }
+                        }
+                    }
                 }
                 agentBusy = false
                 result.onSuccess { json ->
@@ -1423,10 +1435,39 @@ private fun CrmHome(initialRecordId: Long) {
                             Text("با ارسال متن گفتار مشتری برای تحلیل ابری موافقم",
                                 style = MaterialTheme.typography.bodySmall)
                         }
-                        Text(if (textAgentSettings.configured)
-                            "اتصال سرور Gemini روی این گوشی ذخیره شده است"
-                        else "سرور Gemini هنوز توسط مدیر راه‌اندازی نشده است",
+                        Text(if (directGeminiSettings.configured)
+                            "✓ Gemini رایگان مستقیماً روی گوشی آماده استفاده است"
+                        else if (textAgentSettings.configured)
+                            "سرور Gemini متصل است"
+                        else "یک‌بار کلید رایگان Gemini را از Google AI Studio وارد کن",
                             style = MaterialTheme.typography.bodySmall)
+                        if (!directGeminiSettings.configured) {
+                            OutlinedTextField(
+                                value = directGeminiKey,
+                                onValueChange = { directGeminiKey = it },
+                                label = { Text("کلید Gemini (فقط یک‌بار)") },
+                                visualTransformation = PasswordVisualTransformation(),
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true
+                            )
+                            OutlinedButton(onClick = {
+                                runCatching {
+                                    require(agentPrivacyConsent) {
+                                        "ابتدا اجازه ارسال متن و صوت به مدل ابری را فعال کن."
+                                    }
+                                    directGeminiSettings.save(directGeminiKey)
+                                    directGeminiKey = ""
+                                    agentOptIn = true
+                                    agentPrefs.edit().putBoolean("enabled", true).apply()
+                                }.onSuccess {
+                                    Toast.makeText(context,
+                                        "Gemini روی این گوشی فعال شد", Toast.LENGTH_LONG).show()
+                                }.onFailure { error ->
+                                    Toast.makeText(context, error.localizedMessage,
+                                        Toast.LENGTH_LONG).show()
+                                }
+                            }) { Text("فعال‌سازی Gemini رایگان") }
+                        }
                         TextButton(onClick = { showDeveloperSettings = !showDeveloperSettings }) {
                             Text(if (showDeveloperSettings) "بستن تنظیمات توسعه‌دهنده"
                                 else "اتصال پیشرفته (مدیر سیستم)")
@@ -1459,7 +1500,8 @@ private fun CrmHome(initialRecordId: Long) {
                             }) { Text("ذخیره اتصال") }
                             Text("فعال", style = MaterialTheme.typography.bodySmall)
                             Switch(checked = agentOptIn,
-                                enabled = textAgentSettings.configured && agentPrivacyConsent,
+                                enabled = (directGeminiSettings.configured ||
+                                    textAgentSettings.configured) && agentPrivacyConsent,
                                 onCheckedChange = { value ->
                                     agentOptIn = value && agentPrivacyConsent
                                     agentPrefs.edit().putBoolean("enabled", agentOptIn).apply()
@@ -1691,8 +1733,9 @@ private fun CrmHome(initialRecordId: Long) {
                     Text(recordingError, color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall)
                 }
-                if (!textAgentSettings.configured && agentMessages.isNotEmpty()) {
-                    Text("Gemini هنوز از بخش تنظیمات متصل نشده است؛ فقط پردازش محلی قابل استفاده است.",
+                if (!directGeminiSettings.configured && !textAgentSettings.configured &&
+                    agentMessages.isNotEmpty()) {
+                    Text("کلید رایگان Gemini هنوز در تنظیمات وارد نشده است؛ پردازش محلی فعال است.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.secondary)
                 }
