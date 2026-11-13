@@ -47,5 +47,6 @@ dependencies {
     implementation("com.google.android.gms:play-services-location:21.3.0")
     implementation("cz.adaptech.tesseract4android:tesseract4android-openmp:4.9.0")
     implementation("com.google.mlkit:text-recognition:16.0.1")
+    testImplementation("junit:junit:4.13.2")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
