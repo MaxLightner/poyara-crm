@@ -76,6 +76,31 @@ class PersianVoiceInterpreterTest {
         assertEquals(java.time.DayOfWeek.TUESDAY, day)
     }
 
+    @Test fun multiPersonPhoneIsNotAttachedAutomatically() {
+        val value = PersianVoiceInterpreter.parse(
+            "آقای احمدی و خانم حسینی در مبلمان لیپاریس شماره ۰۹۱۵۸۱۵۱۲۰۴")
+        assertNull(value.phone)
+        assertTrue(value.alerts.any { it.contains("بیش از یک شخص") })
+    }
+
+    @Test fun phoneCorrectionDoesNotTurnNewMeetingIntoMeetingCorrection() {
+        val value = PersianVoiceInterpreter.parse(
+            "شماره اشتباه بود شماره درست ۰۹۱۵۸۱۵۱۲۰۴ و فردا ساعت ۵ عصر هم جلسه داریم",
+            nowEpochMillis = now, timezone = zone)
+        assertTrue(value.correctPhone)
+        assertNotNull(value.appointment?.dueAt)
+        assertFalse(value.appointment!!.correction)
+    }
+
+    @Test fun explicitMeetingTimeCorrectionIsRecognized() {
+        val value = PersianVoiceInterpreter.parse(
+            "ساعت جلسه رو اشتباه نوشتی، ساعت درست پنج عصر هست",
+            nowEpochMillis = now, timezone = zone)
+        assertTrue(value.appointment!!.correction)
+        assertNull(value.appointment!!.dueAt)
+        assertEquals(17 * 60, value.appointment!!.minuteOfDay)
+    }
+
     @Test fun correctionsPreserveOriginalUtterances() {
         val earlier = VoiceCaptureDocument.merge("", "آقای احمدی شماره 09150000000",
             "احمدی", "مبلمان لیپاریس", "09150000000", emptyList(), emptyList())
