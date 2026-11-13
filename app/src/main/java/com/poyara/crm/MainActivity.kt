@@ -53,6 +53,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
@@ -1271,6 +1272,49 @@ private fun CrmHome(initialRecordId: Long) {
                             lastVoiceActions.forEach { line ->
                                 Text(line, style = MaterialTheme.typography.bodySmall)
                             }
+                        }
+                    }
+                }
+                Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Agent سبک پردازش متن", fontWeight = FontWeight.SemiBold)
+                        Text("پس از تبدیل گفتار گوگل، فقط متن و حداکثر ۱۵ مخاطب مرتبط برای تحلیل فرستاده می‌شود. پردازش محلی حتی بدون Agent ادامه دارد؛ سرور و کلید مدل باید جداگانه تنظیم شوند.",
+                            style = MaterialTheme.typography.bodySmall)
+                        OutlinedTextField(value = agentUrl, onValueChange = { agentUrl = it },
+                            label = { Text("آدرس HTTPS سرور Agent") },
+                            singleLine = true, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(value = agentPairingToken,
+                            onValueChange = { agentPairingToken = it },
+                            label = { Text("کد اتصال اختصاصی سرور") },
+                            visualTransformation = PasswordVisualTransformation(),
+                            singleLine = true, modifier = Modifier.fillMaxWidth())
+                        Row(verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = {
+                                runCatching {
+                                    textAgentSettings.save(agentUrl, agentPairingToken)
+                                    agentPairingToken = ""
+                                    agentOptIn = true
+                                    agentPrefs.edit().putBoolean("enabled", true).apply()
+                                }.onSuccess {
+                                    Toast.makeText(context, "تنظیمات Agent ذخیره شد", Toast.LENGTH_SHORT).show()
+                                }.onFailure { error ->
+                                    Toast.makeText(context, error.localizedMessage, Toast.LENGTH_LONG).show()
+                                }
+                            }) { Text("ذخیره اتصال") }
+                            Text("فعال", style = MaterialTheme.typography.bodySmall)
+                            Switch(checked = agentOptIn,
+                                enabled = textAgentSettings.configured,
+                                onCheckedChange = { value ->
+                                    agentOptIn = value
+                                    agentPrefs.edit().putBoolean("enabled", value).apply()
+                                })
+                        }
+                        if (agentBusy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        agentMessages.forEach { message ->
+                            Text(message, style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.secondary)
                         }
                     }
                 }
