@@ -2,6 +2,8 @@ package com.poyara.crm
 
 import android.Manifest
 import android.app.role.RoleManager
+import android.app.DatePickerDialog
+import android.app.TimePickerDialog
 import android.accounts.AccountManager
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -61,6 +63,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.Calendar
 import org.json.JSONObject
 import java.time.LocalDateTime
 import java.time.LocalDate
@@ -152,6 +155,10 @@ private fun CrmHome(initialRecordId: Long) {
     var agentMessages by remember { mutableStateOf<List<String>>(emptyList()) }
     var pendingDeleteReminderId by remember { mutableLongStateOf(0L) }
     var pendingDeleteReminderTitle by remember { mutableStateOf("") }
+    var pendingMeetingTitle by remember { mutableStateOf("") }
+    var pendingMeetingTime by remember { mutableStateOf("") }
+    var pendingMeetingEntryId by remember { mutableLongStateOf(0L) }
+    var pendingMeetingLead by remember { mutableIntStateOf(0) }
     var page by rememberSaveable { mutableStateOf("capture") }
     val startupEntry = remember(initialRecordId) { db.all().find { it.id == initialRecordId } }
     val draftPrefs = remember { context.getSharedPreferences("capture_draft", Context.MODE_PRIVATE) }
@@ -597,8 +604,16 @@ private fun CrmHome(initialRecordId: Long) {
                             val item = reminders.optJSONObject(index) ?: continue
                             val dateText = item.optString("date_iso").takeIf { it != "null" }.orEmpty()
                             val timeText = item.optString("time_local").takeIf { it != "null" }.orEmpty()
-                            if (item.optBoolean("requires_confirmation") || dateText.isBlank() || timeText.isBlank()) {
-                                notes += "زمان یک قرار نیازمند تأیید است؛ خودکار ثبت نشد."
+                            if (item.optBoolean("requires_confirmation") ||
+                                dateText.isBlank() || timeText.isBlank()) {
+                                pendingMeetingTitle = item.optString("title")
+                                    .takeIf { it.isNotBlank() }
+                                    ?: "جلسه با " + personName.ifBlank { companyName }
+                                pendingMeetingTime = timeText
+                                pendingMeetingEntryId = sourceEntryId
+                                pendingMeetingLead = item.optInt("remind_days_before", 0)
+                                    .coerceIn(0, 7)
+                                notes += "تاریخ یا ساعت قرار مبهم است؛ از پنجره تأیید انتخاب کن."
                                 continue
                             }
                             val due = runCatching {
@@ -648,7 +663,17 @@ private fun CrmHome(initialRecordId: Long) {
                                 val value = action.optString("value")
                                     .takeUnless { it == "null" }.orEmpty().trim()
                                 if (action.optBoolean("requires_confirmation")) {
-                                    notes += "برای دستور «$type» اطلاعات بیشتری لازم است."
+                                    if (type == "create_reminder") {
+                                        pendingMeetingTitle = action.optString("title")
+                                            .takeUnless { it.isBlank() || it == "null" }
+                                            ?: "جلسه با " + personName.ifBlank { companyName }
+                                        pendingMeetingTime = action.optString("time_local")
+                                            .takeUnless { it == "null" }.orEmpty()
+                                        pendingMeetingEntryId = sourceEntryId
+                                        pendingMeetingLead = action.optInt("remind_days_before", 0)
+                                            .coerceIn(0, 7)
+                                        notes += "برای ثبت قرار، روز و ساعت را در پنجره تأیید انتخاب کن."
+                                    } else notes += "برای دستور «$type» اطلاعات بیشتری لازم است."
                                     continue
                                 }
                                 when (type) {
@@ -2252,6 +2277,70 @@ private fun CrmHome(initialRecordId: Long) {
                 },
                 dismissButton = {
                     TextButton(onClick = { addCategoryDialog = false }) { Text("انصراف") }
+                }
+            )
+        }
+        if (pendingMeetingEntryId > 0L) {
+            AlertDialog(
+                onDismissRequest = {
+                    pendingMeetingEntryId = 0L
+                    pendingMeetingTitle = ""
+                },
+                title = { Text("تأیید قرار پیشنهادی Gemini") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(pendingMeetingTitle)
+                        Text("ساعت پیشنهادی: " +
+                            pendingMeetingTime.ifBlank { "نامشخص" })
+                        Text("روز و ساعت را یک‌بار مشخص کن تا قرار اشتباه ثبت نشود.",
+                            style = MaterialTheme.typography.bodySmall)
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val owner = pendingMeetingEntryId
+                        val title = pendingMeetingTitle
+                        val lead = pendingMeetingLead
+                        val suggested = runCatching {
+                            LocalTime.parse(pendingMeetingTime)
+                        }.getOrDefault(LocalTime.of(15, 0))
+                        val now = Calendar.getInstance()
+                        DatePickerDialog(context, { _, year, month, day ->
+                            val chosen = Calendar.getInstance().apply {
+                                set(Calendar.YEAR, year)
+                                set(Calendar.MONTH, month)
+                                set(Calendar.DAY_OF_MONTH, day)
+                            }
+                            TimePickerDialog(context, { _, hour, minute ->
+                                chosen.set(Calendar.HOUR_OF_DAY, hour)
+                                chosen.set(Calendar.MINUTE, minute)
+                                chosen.set(Calendar.SECOND, 0)
+                                chosen.set(Calendar.MILLISECOND, 0)
+                                if (chosen.timeInMillis <= System.currentTimeMillis()) {
+                                    Toast.makeText(context,
+                                        "زمان قرار باید در آینده باشد", Toast.LENGTH_LONG).show()
+                                } else {
+                                    val id = db.addReminder(owner,
+                                        title.take(160), chosen.timeInMillis, lead)
+                                    db.allReminders().firstOrNull { it.id == id }
+                                        ?.let { ReminderScheduler.schedule(context, it) }
+                                    needVoiceNotificationPermission = true
+                                    refresh()
+                                    Toast.makeText(context,
+                                        "قرار در برنامه کاری ثبت شد", Toast.LENGTH_LONG).show()
+                                }
+                            }, suggested.hour, suggested.minute, true).show()
+                        }, now.get(Calendar.YEAR), now.get(Calendar.MONTH),
+                            now.get(Calendar.DAY_OF_MONTH)).show()
+                        pendingMeetingEntryId = 0L
+                        pendingMeetingTitle = ""
+                    }) { Text("انتخاب روز و ساعت") }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        pendingMeetingEntryId = 0L
+                        pendingMeetingTitle = ""
+                    }) { Text("بعداً") }
                 }
             )
         }
