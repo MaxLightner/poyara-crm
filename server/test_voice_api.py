@@ -101,7 +101,7 @@ class VoiceApiTests(unittest.TestCase):
 
     def test_schema_requires_entities(self):
         self.assertEqual(
-            set(PROPOSAL_SCHEMA["required"]), {"contacts", "reminders", "questions"}
+            set(PROPOSAL_SCHEMA["required"]), {"contacts", "reminders", "questions", "corrected_text", "actions"}
         )
 
 
