@@ -74,6 +74,44 @@ internal class CloudflareDirectClient(context: Context) {
             "reminders", "actions", "questions"))
     }
 
+    /**
+     * Actual server-side account/model verification. Merely saving a token
+     * cannot prove that Workers AI is available from the device's network.
+     */
+    fun testConnection(): Boolean {
+        val key = settings.apiKey()
+        check(settings.configured && key.isNotBlank()) {
+            "شناسه حساب و توکن Workers AI تنظیم نشده‌اند"
+        }
+        val body = JSONObject()
+            .put("model", model)
+            .put("max_completion_tokens", 64)
+            .put("messages", JSONArray().put(
+                JSONObject().put("role", "user")
+                    .put("content", "Reply with the word OK.")))
+        val req = (URL("https://api.cloudflare.com/client/v4/accounts/" +
+            settings.accountId + "/ai/v1/chat/completions")
+            .openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            doOutput = true
+            connectTimeout = 12_000
+            readTimeout = 30_000
+            setRequestProperty("Authorization", "Bearer " + key)
+            setRequestProperty("Content-Type", "application/json; charset=utf-8")
+        }
+        try {
+            req.outputStream.use {
+                it.write(body.toString().toByteArray(Charsets.UTF_8))
+            }
+            when (val code = req.responseCode) {
+                in 200..299 -> return true
+                401, 403 -> error("توکن یا دسترسی حساب Cloudflare پذیرفته نشد")
+                429 -> error("سهمیه رایگان Workers AI فعلاً کافی نیست")
+                else -> error("اتصال Workers AI تأیید نشد (HTTP " + code + ")")
+            }
+        } finally { req.disconnect() }
+    }
+
     fun analyze(
         transcript: String, audio: File?, contact: ContactEntry?,
         reminders: List<WorkReminder>
