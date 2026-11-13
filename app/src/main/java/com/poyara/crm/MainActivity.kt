@@ -202,7 +202,10 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
     var contactCategory by rememberSaveable { mutableStateOf(startupEntry?.category ?: draftPrefs.getString("category", "").orEmpty()) }
     var showExtraPhones by remember { mutableStateOf(extraPhones.isNotEmpty()) }
     var note by rememberSaveable {
-        mutableStateOf(startupEntry?.note ?: if (initialRecordId == 0L) draftPrefs.getString("note", "").orEmpty() else "")
+        mutableStateOf((startupEntry?.note ?: if (initialRecordId == 0L)
+            draftPrefs.getString("note", "").orEmpty() else "")
+            .takeUnless { it.trim() == "صدای ضبط‌شده آماده پردازش است؛ متن اولیه تشخیص داده نشد." }
+            .orEmpty())
     }
     var chosenTags by remember {
         mutableStateOf(startupEntry?.tags ?: if (initialRecordId == 0L)
@@ -224,7 +227,13 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
     var recordingError by remember { mutableStateOf("") }
     // Default to Google's built-in live microphone recognizer. Text is hidden
     // throughout dictation and only appears when Stop is tapped.
-    var googleVoiceMode by rememberSaveable { mutableStateOf(true) }
+    val voicePrefs = remember {
+        context.getSharedPreferences("poyara_voice_preferences", Context.MODE_PRIVATE)
+    }
+    // On-device providers often reject prerecorded M4A. Prefer live dictation.
+    var googleVoiceMode by remember {
+        mutableStateOf(voicePrefs.getBoolean("live_dictation_default", true))
+    }
     var googleVoiceBusy by remember { mutableStateOf(false) }
     var googleVoiceStage by remember { mutableStateOf("") }
     var googleSession by remember { mutableStateOf<GoogleDictationSession?>(null) }
@@ -334,8 +343,9 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
         newGroupId: Long = selectedGroupId
     ): Long {
         val tags = newTags + inferredTags(newNote)
-        if (recordId == 0L && newNote.isBlank() && newName.isBlank() &&
-            newCompany.isBlank() && newPhone.isBlank()) {
+        // Unfinished forms and failed recognition belong to draft preferences,
+        // not the contacts directory. Audio attachments remain in local storage.
+        if (recordId == 0L && !ContactReadiness.isComplete(newName, newPhone)) {
             persistDraft(newName, newPhone, newNote, tags, newCompany, newGroupId)
             return 0L
         }
@@ -568,7 +578,7 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                 }
                 agentBusy = false
                 result.onSuccess { json ->
-                    if (sourceEntryId != recordId || sourceEntryId <= 0L) {
+                    if (sourceEntryId != recordId) {
                         agentMessages = listOf("تحلیل Agent آماده است اما پرونده عوض شده؛ تغییری اعمال نشد.")
                     } else {
                         val notes = mutableListOf<String>()
@@ -611,7 +621,7 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                                     .takeIf { it.isNotBlank() }
                                     ?: "جلسه با " + personName.ifBlank { companyName }
                                 pendingMeetingTime = timeText
-                                pendingMeetingEntryId = sourceEntryId
+                                pendingMeetingEntryId = recordId
                                 pendingMeetingLead = item.optInt("remind_days_before", 0)
                                     .coerceIn(0, 7)
                                 notes += "تاریخ یا ساعت قرار مبهم است؛ از پنجره تأیید انتخاب کن."
@@ -627,11 +637,15 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                             }
                             val title = item.optString("title", "جلسه با " + personName).take(160)
                             val lead = item.optInt("remind_days_before", 0).coerceIn(0, 7)
+                            if (recordId <= 0L) {
+                                notes += "قرار تشخیص داده شد ولی هنوز نام و شماره مخاطب کامل نیست؛ بعد از تکمیل دوباره پردازش کن."
+                                continue
+                            }
                             val duplicate = db.allReminders().any {
-                                it.entryId == sourceEntryId && it.dueAt == due && it.title == title
+                                it.entryId == recordId && it.dueAt == due && it.title == title
                             }
                             if (!duplicate) {
-                                val id = db.addReminder(sourceEntryId, title, due, lead)
+                                val id = db.addReminder(recordId, title, due, lead)
                                 db.allReminders().firstOrNull { it.id == id }?.let {
                                     ReminderScheduler.schedule(context, it)
                                 }
@@ -670,7 +684,7 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                                             ?: "جلسه با " + personName.ifBlank { companyName }
                                         pendingMeetingTime = action.optString("time_local")
                                             .takeUnless { it == "null" }.orEmpty()
-                                        pendingMeetingEntryId = sourceEntryId
+                                        pendingMeetingEntryId = recordId
                                         pendingMeetingLead = action.optInt("remind_days_before", 0)
                                             .coerceIn(0, 7)
                                         notes += "برای ثبت قرار، روز و ساعت را در پنجره تأیید انتخاب کن."
@@ -747,18 +761,20 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                                         val due = parseDue(action)
                                         if (due == null) {
                                             notes += "روز یا ساعت قرار روشن نیست؛ ثبت نشد."
+                                        } else if (recordId <= 0L) {
+                                            notes += "قرار تشخیص داده شد، اما مخاطب هنوز نام و شماره ندارد."
                                         } else {
                                             val title = action.optString("title")
                                                 .takeIf { it.isNotBlank() && it != "null" }
                                                 ?: "جلسه با " + personName.ifBlank { companyName }
                                             val duplicate = db.allReminders(includeDone = true).any {
-                                                it.entryId == sourceEntryId && it.dueAt == due &&
+                                                it.entryId == recordId && it.dueAt == due &&
                                                     it.title == title
                                             }
                                             if (!duplicate) {
                                                 val lead = action.optInt("remind_days_before", 0)
                                                     .coerceIn(0, 7)
-                                                val id = db.addReminder(sourceEntryId,
+                                                val id = db.addReminder(recordId,
                                                     title.take(160), due, lead)
                                                 db.allReminders().firstOrNull { it.id == id }
                                                     ?.let { ReminderScheduler.schedule(context, it) }
@@ -771,7 +787,7 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                                     "update_reminder" -> {
                                         val id = action.optLong("target_reminder_id", -1L)
                                         val old = db.allReminders().firstOrNull {
-                                            it.id == id && it.entryId == sourceEntryId }
+                                            it.id == id && it.entryId == recordId }
                                         if (old == null) {
                                             notes += "قرار موردنظر برای اصلاح پیدا نشد."
                                         } else {
@@ -780,7 +796,7 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                                                 .takeIf { it.isNotBlank() && it != "null" }
                                                 ?: old.title
                                             if (due != null && db.updateReminder(old.id,
-                                                    sourceEntryId, title.take(160), due,
+                                                    recordId, title.take(160), due,
                                                     action.optInt("remind_days_before",
                                                         old.remindDaysBefore).coerceIn(0,7))) {
                                                 ReminderScheduler.cancel(context, old.id)
@@ -793,7 +809,7 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                                     "delete_reminder" -> {
                                         val id = action.optLong("target_reminder_id", -1L)
                                         val old = db.allReminders().firstOrNull {
-                                            it.id == id && it.entryId == sourceEntryId }
+                                            it.id == id && it.entryId == recordId }
                                         if (old != null) {
                                             pendingDeleteReminderId = old.id
                                             pendingDeleteReminderTitle = old.title
@@ -833,8 +849,10 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
 
     fun ensureRecord(): Long {
         if (recordId == 0L) {
-            if (note.isBlank() && personName.isBlank() && companyName.isBlank() && phone.isBlank()) {
-                Toast.makeText(context, "ابتدا چیزی در کادر اصلی بنویس یا ضبط کن", Toast.LENGTH_SHORT).show()
+            if (!ContactReadiness.isComplete(personName, phone)) {
+                Toast.makeText(context,
+                    "پیش‌نویس ذخیره شده است؛ برای ایجاد مخاطب نام و شماره معتبر وارد کن",
+                    Toast.LENGTH_LONG).show()
                 return 0L
             }
             val tags = chosenTags + inferredTags(note)
@@ -872,7 +890,9 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
         showExtraPhones = extraPhones.isNotEmpty()
         contactRole = entry.role
         contactCategory = entry.category
-        note = entry.note
+        note = entry.note.takeUnless {
+            it.trim() == "صدای ضبط‌شده آماده پردازش است؛ متن اولیه تشخیص داده نشد."
+        }.orEmpty()
         lastVoiceActions = emptyList()
         chosenTags = entry.tags
         draftLatitude = entry.latitude
@@ -1064,9 +1084,13 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                     voiceFileReader = null
                     if (!text.isNullOrBlank()) appendRawSpeech(text)
                     else {
-                        val placeholder = "صدای ضبط‌شده آماده پردازش است؛ متن اولیه تشخیص داده نشد."
-                        if (note.isBlank()) { note = placeholder; save(newNote = placeholder) }
-                        agentMessages = listOf(error ?: placeholder)
+                        // A recognizer rejecting prerecorded M4A is a status,
+                        // NEVER a customer note or customer name.
+                        agentMessages = listOf(
+                            "فایل صوتی محفوظ است ولی تشخیص متن توسط گوشی انجام نشد. " +
+                            "اگر Gemini فعال است «پردازش» را بزن، یا از حالت گفتار زنده استفاده کن.",
+                            error.orEmpty()
+                        ).filter { it.isNotBlank() }
                     }
                 })
         } catch (error: Exception) {
@@ -1079,8 +1103,9 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { allowed ->
-        if (allowed) beginRecording()
-        else {
+        if (allowed) {
+            if (googleVoiceMode) beginGoogleDictation() else beginRecording()
+        } else {
             recordingError = "برای ضبط صدا، مجوز میکروفون را در تنظیمات گوشی فعال کن."
             Toast.makeText(context, recordingError, Toast.LENGTH_LONG).show()
         }
@@ -1406,6 +1431,10 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                                         Toast.makeText(context,
                                             "پرونده ذخیره شد", Toast.LENGTH_SHORT).show()
                                         newEntry()
+                                    } else {
+                                        Toast.makeText(context,
+                                            "پیش‌نویس محفوظ است؛ نام و شماره را کامل کن",
+                                            Toast.LENGTH_LONG).show()
                                     }
                                 }
                             ) { Text("✓", style = MaterialTheme.typography.headlineMedium) }
@@ -1416,11 +1445,13 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                             contentColor = Color.White,
                             shape = RoundedCornerShape(30.dp),
                             onClick = {
-                                if (isRecording) stopRecording()
-                                else if (!voiceTranscribing &&
+                                if (isRecording) {
+                                    if (googleVoiceMode) stopGoogleDictation() else stopRecording()
+                                } else if (!voiceTranscribing && !googleVoiceBusy &&
                                     context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
-                                        PackageManager.PERMISSION_GRANTED) beginRecording()
-                                else if (!voiceTranscribing) {
+                                        PackageManager.PERMISSION_GRANTED) {
+                                    if (googleVoiceMode) beginGoogleDictation() else beginRecording()
+                                } else if (!voiceTranscribing && !googleVoiceBusy) {
                                     permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                                 }
                             }
@@ -1439,7 +1470,7 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                     Triple("capture", "ثبت سریع", "✎"),
                     Triple("list", "مخاطبان", "▦"),
                     Triple("agenda", "برنامه کاری", "▤"),
-                    Triple("messages", "پیامک", "✉")
+                    Triple("settings", "تنظیمات", "⚙")
                 ).forEach { (key, title, symbol) ->
                     NavigationBarItem(
                         selected = page == key,
@@ -1447,7 +1478,7 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                             when (key) {
                                 "list" -> { refresh(); page = key }
                                 "agenda" -> { refresh(); page = key }
-                                "messages" -> goToMessages()
+                                "settings" -> page = key
                                 else -> page = key
                             }
                         },
@@ -1463,10 +1494,12 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Box(Modifier.fillMaxWidth().height(48.dp)) {
-            TextButton(onClick = { page = if (page == "settings") "capture" else "settings" },
-                modifier = Modifier.align(Alignment.CenterStart)) {
-                Text(if (page == "settings") "بازگشت" else "⚙ تنظیمات")
-            }
+            Text(
+                if (page == "settings") "تنظیمات و اتصال‌ها" else "پویارا CRM",
+                modifier = Modifier.align(Alignment.CenterStart),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.secondary
+            )
             if (page == "capture") {
                 Box(
                     Modifier.align(Alignment.CenterEnd)
@@ -1488,15 +1521,57 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("تنظیمات پویارا", style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold)
+                Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("روش ضبط دکمه قرمز", fontWeight = FontWeight.SemiBold)
+                        Row(verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("تبدیل گفتار زنده به متن", modifier = Modifier.weight(1f))
+                            Switch(checked = googleVoiceMode, onCheckedChange = { checked ->
+                                googleVoiceMode = checked
+                                voicePrefs.edit().putBoolean("live_dictation_default", checked).apply()
+                            })
+                        }
+                        Text(
+                            if (googleVoiceMode)
+                                "با پایان صحبت، متن گفتار گوگل در کادر اصلی می‌آید. این حالت فایل خام صدا ذخیره نمی‌کند."
+                            else
+                                "صدای M4A محفوظ می‌ماند و Gemini می‌تواند صوت اصلی را تحلیل کند. تبدیل اولیه فایل در بعضی گوشی‌ها پشتیبانی نمی‌شود.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
                 Text("مجوزهای سیستم و اتصال‌ها اینجا مدیریت می‌شوند.",
                     style = MaterialTheme.typography.bodySmall)
+                val unfinished = allEntries.filterNot {
+                    ContactReadiness.isComplete(it.name, it.phone)
+                }
+                if (unfinished.isNotEmpty()) {
+                    var showLegacyDrafts by remember { mutableStateOf(false) }
+                    Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                        Column(Modifier.fillMaxWidth().padding(10.dp)) {
+                            TextButton(onClick = { showLegacyDrafts = !showLegacyDrafts }) {
+                                Text("پیش‌نویس‌های نسخه‌های قبلی (${unfinished.size}) " +
+                                    if (showLegacyDrafts) "▲" else "▼")
+                            }
+                            if (showLegacyDrafts) unfinished.take(20).forEach { old ->
+                                TextButton(onClick = { open(old) }) {
+                                    Text((old.name.ifBlank { old.company }
+                                        .ifBlank { "یادداشت/صدای ناتمام" }).take(55) +
+                                        " · تکمیل مخاطب")
+                                }
+                            }
+                        }
+                    }
+                }
                 Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
                     Column(Modifier.fillMaxWidth().padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("Agent رایگان · Gemini Flash-Lite", fontWeight = FontWeight.SemiBold)
-                        Text("مدل رایگان گوگل از طریق سرور خصوصی شما فراخوانی می‌شود. فقط متن همان ویس و نام/مجموعه همین پرونده ارسال می‌شود؛ سایر مخاطبین گوشی فرستاده نمی‌شوند. بدون اتصال، موتور محلی همچنان کار می‌کند.",
+                        Text("برای استفاده شخصی، Gemini مستقیماً با کلید پروژه Google AI Studio فعال می‌شود؛ سرور واسط لازم نیست. حساب Google Contacts به‌تنهایی کلید Gemini ایجاد نمی‌کند.",
                             style = MaterialTheme.typography.bodySmall)
-                        Text("توجه: در سهمیه رایگان Gemini، گوگل ممکن است متن ارسالی را برای بهبود محصولاتش استفاده کند؛ اطلاعات مشتری را فقط با رضایت و آگاهی ارسال کن. سهمیه رایگان محدود است؛ خود سرور ممکن است هزینه داشته باشد.",
+                        Text("سهمیه رایگان، دسترسی منطقه‌ای و شرایط استفاده تابع قوانین گوگل است. Gemini API در ایران در فهرست مناطق رسمی پشتیبانی‌شده نیست؛ صرف ورود به Gmail این محدودیت را برطرف نمی‌کند.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error)
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1519,6 +1594,15 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                         else "یک‌بار کلید رایگان Gemini را از Google AI Studio وارد کن",
                             style = MaterialTheme.typography.bodySmall)
                         if (!directGeminiSettings.configured) {
+                            TextButton(onClick = {
+                                runCatching {
+                                    context.startActivity(Intent(Intent.ACTION_VIEW,
+                                        Uri.parse("https://aistudio.google.com/api-keys")))
+                                }.onFailure {
+                                    Toast.makeText(context, "صفحه Google AI Studio باز نشد",
+                                        Toast.LENGTH_SHORT).show()
+                                }
+                            }) { Text("دریافت کلید Gemini از Google AI Studio") }
                             OutlinedTextField(
                                 value = directGeminiKey,
                                 onValueChange = { directGeminiKey = it },
@@ -1794,7 +1878,15 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                         onClick = {
                             val transcript = pendingVoiceTranscript.ifBlank { note.trim() }
                             if (transcript.isNotBlank() || pendingVoiceFilePath.isNotBlank()) {
-                                addSpeechToCapture(transcript)
+                                if (pendingVoiceFilePath.isNotBlank() &&
+                                    transcript.isBlank() &&
+                                    !directGeminiSettings.configured &&
+                                    !textAgentSettings.configured) {
+                                    agentMessages = listOf(
+                                        "صدا ذخیره شده است، اما برای پردازش فایل بدون متن " +
+                                        "باید Gemini را در تنظیمات فعال کنی."
+                                    )
+                                } else addSpeechToCapture(transcript)
                             }
                         },
                         enabled = !agentBusy && !isRecording && !voiceTranscribing &&
@@ -2137,7 +2229,10 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                     }
                 }
             }
+            // Legacy note-only records remain in SQLite for recovery, but are
+            // not real contacts and cannot be selected for calls or Google Sync.
             val filtered = allEntries.filter { entry ->
+                ContactReadiness.isComplete(entry.name, entry.phone) &&
                 (filterTag == "همه" || filterTag in entry.tags) &&
                     (filterRole == "همه سمت‌ها" || filterRole == entry.role) &&
                     (filterCategory == "همه گروه‌ها" || filterCategory == entry.category.ifBlank { "دسته‌بندی‌نشده" }) &&
