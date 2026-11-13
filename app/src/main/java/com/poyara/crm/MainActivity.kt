@@ -2,6 +2,7 @@ package com.poyara.crm
 
 import android.Manifest
 import android.app.role.RoleManager
+import android.accounts.AccountManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -18,6 +19,9 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -101,6 +105,10 @@ private fun inferredTags(text: String): Set<String> = buildSet {
 private fun CrmHome(initialRecordId: Long) {
     val context = LocalContext.current
     val db = remember { CrmDb(context.applicationContext) }
+    val coroutineScope = rememberCoroutineScope()
+    val googlePrefs = remember { context.getSharedPreferences(GoogleContactsBridge.PREFS, Context.MODE_PRIVATE) }
+    var googleAccount by remember { mutableStateOf(googlePrefs.getString("account", "").orEmpty()) }
+    var googleSyncBusy by remember { mutableStateOf(false) }
     var page by rememberSaveable { mutableStateOf("capture") }
     val startupEntry = remember(initialRecordId) { db.all().find { it.id == initialRecordId } }
     val draftPrefs = remember { context.getSharedPreferences("capture_draft", Context.MODE_PRIVATE) }
@@ -195,6 +203,7 @@ private fun CrmHome(initialRecordId: Long) {
     }
     LaunchedEffect(Unit) {
         ReminderScheduler.createChannel(context)
+        if (googleAccount.isNotBlank()) PoyaraGoogleSyncWorker.schedule(context)
         // Google file-to-text mode: stop leftover background uploads from old versions.
         // Voice files and all CRM records are retained.
         androidx.work.WorkManager.getInstance(context)
@@ -813,6 +822,58 @@ private fun CrmHome(initialRecordId: Long) {
                     Toast.makeText(context, "$it پرونده جدید بازیابی شد", Toast.LENGTH_LONG).show()
                 }
                 .onFailure { Toast.makeText(context, "خطا در بازیابی: ${it.message}", Toast.LENGTH_LONG).show() }
+        }
+    }
+
+    fun performGoogleSync() {
+        if (googleAccount.isBlank() || googleSyncBusy) return
+        googleSyncBusy = true
+        coroutineScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                runCatching { GoogleContactsBridge(context.applicationContext,
+                    CrmDb(context.applicationContext).also { /* separate DB connection */ })
+                    .sync(googleAccount) }
+            }
+            googleSyncBusy = false
+            outcome.onSuccess { result ->
+                refresh()
+                Toast.makeText(context,
+                    "گوگل: ${result.imported} دریافت، ${result.uploaded} ارسال", Toast.LENGTH_LONG).show()
+            }.onFailure { error ->
+                Toast.makeText(context,
+                    "همگام‌سازی انجام نشد: ${error.localizedMessage}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    val googleContactsPermissions = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        if (grants[Manifest.permission.READ_CONTACTS] == true &&
+            grants[Manifest.permission.WRITE_CONTACTS] == true) performGoogleSync()
+        else Toast.makeText(context, "بدون دسترسی مخاطبین، همگام‌سازی فعال نمی‌شود",
+            Toast.LENGTH_LONG).show()
+    }
+
+    fun requestGoogleSync() {
+        if (context.checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED &&
+            context.checkSelfPermission(Manifest.permission.WRITE_CONTACTS) == PackageManager.PERMISSION_GRANTED)
+            performGoogleSync()
+        else googleContactsPermissions.launch(arrayOf(
+            Manifest.permission.READ_CONTACTS, Manifest.permission.WRITE_CONTACTS))
+    }
+
+    val accountPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            val chosen = result.data?.getStringExtra(AccountManager.KEY_ACCOUNT_NAME).orEmpty()
+            if (chosen.isNotBlank()) {
+                googleAccount = chosen
+                googlePrefs.edit().putString("account", chosen).apply()
+                PoyaraGoogleSyncWorker.schedule(context)
+                requestGoogleSync()
+            }
         }
     }
 
@@ -1442,6 +1503,35 @@ private fun CrmHome(initialRecordId: Long) {
                 modifier = Modifier.fillMaxWidth()
             ) { Text("⌖ نقشه مشتریان و افراد اطراف من") }
             // Backup data support is retained for migration, but controls are hidden from contacts.
+            Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                Column(Modifier.fillMaxWidth().padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text("مخاطبین مشترک با Google Contacts", fontWeight = FontWeight.SemiBold)
+                    Text(if (googleAccount.isBlank()) "حساب گوگل انتخاب نشده است"
+                        else "حساب انتخاب‌شده: " + googleAccount,
+                        style = MaterialTheme.typography.bodySmall)
+                    Text("فقط مخاطبین دارای شناسه پویارا وارد می‌شوند. با همگام‌سازی، نام، شماره، سمت، گروه و یادداشت‌های CRM در Google Contacts همین حساب ذخیره می‌شوند. همگام‌سازی خود Google باید در تنظیمات گوشی روشن باشد.",
+                        style = MaterialTheme.typography.bodySmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = {
+                            runCatching {
+                                accountPicker.launch(AccountManager.newChooseAccountIntent(
+                                    null, null, arrayOf("com.google"), false,
+                                    null, null, null, null))
+                            }.onFailure {
+                                Toast.makeText(context, "حساب گوگل را ابتدا به تنظیمات گوشی اضافه کن",
+                                    Toast.LENGTH_LONG).show()
+                            }
+                        }) { Text("انتخاب حساب گوگل") }
+                        if (googleAccount.isNotBlank()) {
+                            OutlinedButton(onClick = { requestGoogleSync() },
+                                enabled = !googleSyncBusy) {
+                                Text(if (googleSyncBusy) "در حال همگام‌سازی" else "همگام‌سازی")
+                            }
+                        }
+                    }
+                }
+            }
             OutlinedTextField(
                 value = search,
                 onValueChange = { search = it },
