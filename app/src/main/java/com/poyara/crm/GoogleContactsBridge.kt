@@ -74,27 +74,31 @@ internal class GoogleContactsBridge(private val context: Context, private val db
     }
 
     private fun googleRawContacts(accountName: String): Map<Long, Remote> {
-        val ids = mutableListOf<Long>()
-        context.contentResolver.query(ContactsContract.RawContacts.CONTENT_URI,
-            arrayOf(ContactsContract.RawContacts._ID),
-            "${ContactsContract.RawContacts.ACCOUNT_TYPE}=? AND ${ContactsContract.RawContacts.ACCOUNT_NAME}=? AND ${ContactsContract.RawContacts.DELETED}=0",
-            arrayOf(ACCOUNT_TYPE, accountName), null)?.use { cursor ->
-            while (cursor.moveToNext()) ids += cursor.getLong(0)
-        }
         val result = mutableMapOf<Long, Remote>()
-        ids.forEach { id ->
-            context.contentResolver.query(ContactsContract.Data.CONTENT_URI,
-                arrayOf(ContactsContract.CommonDataKinds.Note.NOTE),
-                "${ContactsContract.Data.RAW_CONTACT_ID}=? AND ${ContactsContract.Data.MIMETYPE}=?",
-                arrayOf(id.toString(), ContactsContract.CommonDataKinds.Note.CONTENT_ITEM_TYPE),
-                null)?.use { cursor ->
-                while (cursor.moveToNext()) {
-                    val note = cursor.getString(0).orEmpty()
-                    if (note.startsWith(MARKER)) {
-                        runCatching { JSONObject(note.removePrefix(MARKER)) }.getOrNull()
-                            ?.let { payload -> result[id] = Remote(id, payload) }
-                    }
-                }
+        // Query tagged notes first. Never perform one query per personal Google contact:
+        // a personal account can have thousands of unrelated records.
+        context.contentResolver.query(ContactsContract.Data.CONTENT_URI,
+            arrayOf(ContactsContract.Data.RAW_CONTACT_ID,
+                ContactsContract.CommonDataKinds.Note.NOTE),
+            "${ContactsContract.Data.MIMETYPE}=? AND ${ContactsContract.CommonDataKinds.Note.NOTE} LIKE ?",
+            arrayOf(ContactsContract.CommonDataKinds.Note.CONTENT_ITEM_TYPE, MARKER + "%"),
+            null)?.use { cursor ->
+            while (cursor.moveToNext()) {
+                val rawId = cursor.getLong(0)
+                val note = cursor.getString(1).orEmpty()
+                if (!note.startsWith(MARKER)) continue
+                val belongsToChosenAccount = context.contentResolver.query(
+                    ContactsContract.RawContacts.CONTENT_URI,
+                    arrayOf(ContactsContract.RawContacts._ID),
+                    "${ContactsContract.RawContacts._ID}=? AND " +
+                        "${ContactsContract.RawContacts.ACCOUNT_TYPE}=? AND " +
+                        "${ContactsContract.RawContacts.ACCOUNT_NAME}=? AND " +
+                        "${ContactsContract.RawContacts.DELETED}=0",
+                    arrayOf(rawId.toString(), ACCOUNT_TYPE, accountName), null
+                )?.use { it.moveToFirst() } == true
+                if (!belongsToChosenAccount) continue
+                runCatching { JSONObject(note.removePrefix(MARKER)) }.getOrNull()
+                    ?.let { payload -> result[rawId] = Remote(rawId, payload) }
             }
         }
         return result
