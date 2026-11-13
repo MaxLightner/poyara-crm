@@ -13,7 +13,9 @@ permissions:
 
 jobs:
   publish:
-    if: vars.POYARA_CLOUD_BACKEND_ENABLED == 'true'
+    # The central Worker deployment workflow publishes connected APKs.
+    # Never release a disconnected APK from this legacy workflow.
+    if: vars.POYARA_CLOUD_BACKEND_ENABLED == 'legacy-manual-only'
     runs-on: ubuntu-latest
     timeout-minutes: 55
     steps:
