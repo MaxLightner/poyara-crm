@@ -45,7 +45,8 @@ internal class GeminiDirectClient(context: Context) {
         val actionsFields = JSONObject()
             .put("type", JSONObject().put("type", "string")
                 .put("enum", JSONArray(listOf(
-                    "correct_name", "add_phone", "set_role", "set_category",
+                    "correct_name", "correct_phone", "remove_phone", "add_phone",
+                    "set_company", "set_role", "set_category",
                     "create_reminder", "update_reminder", "delete_reminder",
                     "append_note"))))
             .put("value", nullableStr())
@@ -54,8 +55,10 @@ internal class GeminiDirectClient(context: Context) {
             .put("date_iso", nullableStr())
             .put("time_local", nullableStr())
             .put("requires_confirmation", JSONObject().put("type", "boolean"))
+            .put("remind_days_before", JSONObject().put("type", "integer"))
         val actionNames = listOf("type", "value", "target_reminder_id",
-            "title", "date_iso", "time_local", "requires_confirmation")
+            "title", "date_iso", "time_local", "requires_confirmation",
+            "remind_days_before")
         val rootFields = JSONObject()
             .put("corrected_text", str())
             .put("contacts", JSONObject().put("type", "array")
@@ -109,7 +112,8 @@ Produce corrected_text in accurate Persian spelling, without inventing words.
 Return structured JSON only, exactly matching the schema.
 Extract people, phone number, organization, role, business category and notes.
 For this ONE active contact, emit actions as appropriate: correct_name,
-add_phone, set_role, set_category, create_reminder, update_reminder,
+correct_phone, remove_phone, add_phone, set_company, set_role,
+set_category, create_reminder, update_reminder,
 delete_reminder, append_note. Do not execute actions yourself.
 Only assign a target_reminder_id from known_reminders. Do not guess IDs.
 For a new meeting with an explicit future day and a colloquial hour of 3,
@@ -123,7 +127,8 @@ If multiple people are mentioned with unclear phone ownership, ask rather
 than change existing contact. Avoid duplicate creation.
 Actions must specify type, value (or null), target_reminder_id (or null),
 title (or null), date_iso (or null), time_local (or null), and boolean
-requires_confirmation. Return empty arrays for no suggested changes.
+requires_confirmation, and integer remind_days_before (0..7).
+Return empty arrays for no suggested changes.
 """.trimIndent()
         val parts = JSONArray().put(JSONObject().put("text",
             instructions + "\n\nCONTEXT:\n" + context.toString()))
