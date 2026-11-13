@@ -60,6 +60,11 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import org.json.JSONObject
+import java.time.LocalDateTime
+import java.time.LocalDate
+import java.time.LocalTime
+import java.time.ZoneId
 
 private val tagChoices = listOf("مبلمان", "کابینت", "معماری", "مدیریت", "پیگیری", "مشتری ثابت", "مهم")
 private val categoryChoices = listOf("مبل‌فروشی", "مهندسی ساختمان", "کابینت‌سازی", "سایر")
@@ -109,6 +114,13 @@ private fun CrmHome(initialRecordId: Long) {
     val googlePrefs = remember { context.getSharedPreferences(GoogleContactsBridge.PREFS, Context.MODE_PRIVATE) }
     var googleAccount by remember { mutableStateOf(googlePrefs.getString("account", "").orEmpty()) }
     var googleSyncBusy by remember { mutableStateOf(false) }
+    val textAgentSettings = remember { VoiceServerSettings(context.applicationContext) }
+    val agentPrefs = remember { context.getSharedPreferences("poyara_text_agent", Context.MODE_PRIVATE) }
+    var agentOptIn by remember { mutableStateOf(agentPrefs.getBoolean("enabled", false)) }
+    var agentUrl by rememberSaveable { mutableStateOf(textAgentSettings.endpoint) }
+    var agentPairingToken by remember { mutableStateOf("") }
+    var agentBusy by remember { mutableStateOf(false) }
+    var agentMessages by remember { mutableStateOf<List<String>>(emptyList()) }
     var page by rememberSaveable { mutableStateOf("capture") }
     val startupEntry = remember(initialRecordId) { db.all().find { it.id == initialRecordId } }
     val draftPrefs = remember { context.getSharedPreferences("capture_draft", Context.MODE_PRIVATE) }
@@ -472,6 +484,93 @@ private fun CrmHome(initialRecordId: Long) {
             newPhone = phone, newNote = revised)
         lastVoiceActions = (feedback + warnings).distinct().ifEmpty {
             listOf("متن گفتار ذخیره شد؛ دستور روشن دیگری برای اعمال پیدا نشد.")
+        }
+        if (agentOptIn && textAgentSettings.configured && !agentBusy) {
+            val sourceEntryId = entryId
+            val sourceName = personName
+            val sourcePhone = phone
+            agentBusy = true
+            coroutineScope.launch {
+                val result = withContext(Dispatchers.IO) {
+                    runCatching { CrmTextAgentClient(context.applicationContext)
+                        .analyze(transcript, db.all()) }
+                }
+                agentBusy = false
+                result.onSuccess { json ->
+                    if (sourceEntryId != recordId || sourceEntryId <= 0L) {
+                        agentMessages = listOf("تحلیل Agent آماده است اما پرونده عوض شده؛ تغییری اعمال نشد.")
+                    } else {
+                        val notes = mutableListOf<String>()
+                        val contacts = json.optJSONArray("contacts")
+                        if (contacts != null && contacts.length() == 1) {
+                            val contact = contacts.optJSONObject(0)
+                            if (contact != null) {
+                                fun clean(key: String): String = contact.optString(key)
+                                    .takeIf { it != "null" }.orEmpty().trim()
+                                val proposedName = clean("name")
+                                // Prevent moving another person's facts into the current record.
+                                val identityMatches = proposedName.isBlank() || sourceName.isBlank() ||
+                                    proposedName == sourceName ||
+                                    ("آقای " + proposedName) == sourceName ||
+                                    ("خانم " + proposedName) == sourceName
+                                if (identityMatches && sourcePhone == phone) {
+                                    if (personName.isBlank() && proposedName.isNotBlank()) personName = proposedName
+                                    if (companyName.isBlank() && clean("company").isNotBlank()) companyName = clean("company")
+                                    val proposedNumber = normalizePhone(clean("phone"))
+                                    if (phone.isBlank() && proposedNumber.matches(Regex("""0\\d{9,10}"""))) phone = proposedNumber
+                                    if (contactRole.isBlank() && clean("role").isNotBlank()) contactRole = clean("role")
+                                    if (contactCategory.isBlank() && clean("category").isNotBlank()) contactCategory = clean("category")
+                                    if (contactRole.contains("مدیر") || contactRole.contains("مدیریت"))
+                                        chosenTags = chosenTags + "مدیریت"
+                                    save()
+                                    notes += "اطلاعات روشن مخاطب از Agent در پرونده اعمال شد."
+                                } else notes += "پیشنهاد مخاطب دیگر تشخیص داده شد؛ برای جلوگیری از اشتباه اعمال نشد."
+                            }
+                        }
+                        val reminders = json.optJSONArray("reminders")
+                        if (reminders != null) for (index in 0 until reminders.length()) {
+                            val item = reminders.optJSONObject(index) ?: continue
+                            val dateText = item.optString("date_iso").takeIf { it != "null" }.orEmpty()
+                            val timeText = item.optString("time_local").takeIf { it != "null" }.orEmpty()
+                            if (item.optBoolean("requires_confirmation") || dateText.isBlank() || timeText.isBlank()) {
+                                notes += "زمان یک قرار نیازمند تأیید است؛ خودکار ثبت نشد."
+                                continue
+                            }
+                            val due = runCatching {
+                                LocalDateTime.of(LocalDate.parse(dateText), LocalTime.parse(timeText))
+                                    .atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+                            }.getOrNull()
+                            if (due == null || due <= System.currentTimeMillis()) {
+                                notes += "تاریخ یا ساعت پیشنهادی معتبر نیست."
+                                continue
+                            }
+                            val title = item.optString("title", "جلسه با " + personName).take(160)
+                            val lead = item.optInt("remind_days_before", 0).coerceIn(0, 7)
+                            val duplicate = db.allReminders().any {
+                                it.entryId == sourceEntryId && it.dueAt == due && it.title == title
+                            }
+                            if (!duplicate) {
+                                val id = db.addReminder(sourceEntryId, title, due, lead)
+                                db.allReminders().firstOrNull { it.id == id }?.let {
+                                    ReminderScheduler.schedule(context, it)
+                                }
+                                needVoiceNotificationPermission = true
+                                notes += "قرار Agent در برنامه کاری ثبت شد: " + title
+                            }
+                        }
+                        val questions = json.optJSONArray("questions")
+                        if (questions != null) for (i in 0 until questions.length()) {
+                            questions.optString(i).takeIf { it.isNotBlank() }
+                                ?.let { notes += "سؤال Agent: " + it.take(240) }
+                        }
+                        agentMessages = notes.distinct().ifEmpty { listOf("Agent دستور جدیدی تشخیص نداد.") }
+                        refresh()
+                    }
+                }.onFailure { error ->
+                    agentMessages = listOf("Agent در دسترس نبود؛ متن و تغییرات محلی حفظ شدند: " +
+                        error.localizedMessage.orEmpty().take(160))
+                }
+            }
         }
     }
 
