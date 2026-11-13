@@ -389,8 +389,7 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
     fun addSpeechToCapture(transcript: String) {
         if (transcript.isBlank() && pendingVoiceFilePath.isBlank()) return
         val actions = PersianVoiceInterpreter.parse(
-            if (agentOptIn && (cloudflareSettings.configured ||
-                directGeminiSettings.configured || textAgentSettings.configured))
+            if (agentOptIn && cloudflareSettings.configured)
                 "" else transcript,
             personName, companyName, phone)
         val previousName = personName
@@ -554,8 +553,7 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
             listOf("متن گفتار ذخیره شد؛ دستور روشن دیگری برای اعمال پیدا نشد.")
         }
         if (agentOptIn && agentPrivacyConsent &&
-            (cloudflareSettings.configured || directGeminiSettings.configured ||
-                textAgentSettings.configured) && !agentBusy) {
+            cloudflareSettings.configured && !agentBusy) {
             val sourceEntryId = entryId
             val sourceName = personName
             val sourcePhone = phone
@@ -568,19 +566,8 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                         val sameContact = db.all().filter { it.id == sourceEntryId }
                         val sameReminders = db.allReminders()
                             .filter { it.entryId == sourceEntryId }
-                        if (cloudflareSettings.configured) {
-                            CloudflareDirectClient(context.applicationContext).analyze(
-                                transcript, audio, sameContact.firstOrNull(), sameReminders)
-                        } else if (directGeminiSettings.configured) {
-                            GeminiDirectClient(context.applicationContext).analyze(
-                                transcript, audio, sameContact.firstOrNull(), sameReminders)
-                        } else {
-                            CrmTextAgentClient(context.applicationContext).let { client ->
-                                if (audio != null)
-                                    client.analyzeAudio(audio, transcript, sameContact, sameReminders)
-                                else client.analyze(transcript, sameContact)
-                            }
-                        }
+                        CloudflareDirectClient(context.applicationContext).analyze(
+                            transcript, audio, sameContact.firstOrNull(), sameReminders)
                     }
                 }
                 agentBusy = false
@@ -1583,111 +1570,78 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                 Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
                     Column(Modifier.fillMaxWidth().padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Agent رایگان · Gemini Flash-Lite", fontWeight = FontWeight.SemiBold)
-                        Text("برای استفاده شخصی، Gemini مستقیماً با کلید پروژه Google AI Studio فعال می‌شود؛ سرور واسط لازم نیست. حساب Google Contacts به‌تنهایی کلید Gemini ایجاد نمی‌کند.",
+                        Text("هوش مصنوعی رایگان · Cloudflare Workers AI",
+                            fontWeight = FontWeight.SemiBold)
+                        Text("مدل GLM-4.7-Flash؛ پردازش پس از هر ویس خودکار است. سهمیه رایگان روزانه Cloudflare محدود است.",
                             style = MaterialTheme.typography.bodySmall)
-                        Text("سهمیه رایگان، دسترسی منطقه‌ای و شرایط استفاده تابع قوانین گوگل است. Gemini API در ایران در فهرست مناطق رسمی پشتیبانی‌شده نیست؛ صرف ورود به Gmail این محدودیت را برطرف نمی‌کند.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error)
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(checked = agentPrivacyConsent,
-                                onCheckedChange = { accepted ->
-                                    agentPrivacyConsent = accepted
-                                    if (!accepted) agentOptIn = false
-                                    agentPrefs.edit()
-                                        .putBoolean("cloud_text_consent_v1", accepted)
-                                        .putBoolean("enabled", if (accepted) agentOptIn else false)
-                                        .apply()
-                                })
-                            Text("با ارسال متن گفتار مشتری برای تحلیل ابری موافقم",
+                            Checkbox(checked = agentPrivacyConsent, onCheckedChange = { accepted ->
+                                agentPrivacyConsent = accepted
+                                if (!accepted) agentOptIn = false
+                                agentPrefs.edit().putBoolean("cloud_text_consent_v1", accepted)
+                                    .putBoolean("enabled", if (accepted) agentOptIn else false).apply()
+                            })
+                            Text("اجازه ارسال متن و فایل صوتی برای پردازش را می‌دهم",
                                 style = MaterialTheme.typography.bodySmall)
                         }
-                        Text(if (directGeminiSettings.configured)
-                            "✓ Gemini رایگان مستقیماً روی گوشی آماده استفاده است"
-                        else if (textAgentSettings.configured)
-                            "سرور Gemini متصل است"
-                        else "یک‌بار کلید رایگان Gemini را از Google AI Studio وارد کن",
-                            style = MaterialTheme.typography.bodySmall)
-                        if (!directGeminiSettings.configured) {
-                            TextButton(onClick = {
-                                runCatching {
-                                    context.startActivity(Intent(Intent.ACTION_VIEW,
-                                        Uri.parse("https://aistudio.google.com/api-keys")))
-                                }.onFailure {
-                                    Toast.makeText(context, "صفحه Google AI Studio باز نشد",
-                                        Toast.LENGTH_SHORT).show()
-                                }
-                            }) { Text("دریافت کلید Gemini از Google AI Studio") }
-                            OutlinedTextField(
-                                value = directGeminiKey,
-                                onValueChange = { directGeminiKey = it },
-                                label = { Text("کلید Gemini (فقط یک‌بار)") },
+                        if (cloudflareSettings.configured) {
+                            Text("✓ حساب Workers AI روی این دستگاه تنظیم شده است",
+                                color = MaterialTheme.colorScheme.primary,
+                                style = MaterialTheme.typography.bodySmall)
+                        } else {
+                            OutlinedTextField(value = cloudflareAccountId,
+                                onValueChange = { cloudflareAccountId = it.trim() },
+                                label = { Text("Account ID حساب Cloudflare") },
+                                modifier = Modifier.fillMaxWidth(), singleLine = true)
+                            OutlinedTextField(value = cloudflareApiToken,
+                                onValueChange = { cloudflareApiToken = it },
+                                label = { Text("API Token محدود به Workers AI") },
                                 visualTransformation = PasswordVisualTransformation(),
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true
-                            )
-                            OutlinedButton(onClick = {
+                                modifier = Modifier.fillMaxWidth(), singleLine = true)
+                            TextButton(onClick = {
+                                context.startActivity(Intent(Intent.ACTION_VIEW,
+                                    Uri.parse("https://dash.cloudflare.com/")))
+                            }) { Text("بازکردن Cloudflare Dashboard") }
+                            Button(onClick = {
                                 runCatching {
                                     require(agentPrivacyConsent) {
-                                        "ابتدا اجازه ارسال متن و صوت به مدل ابری را فعال کن."
+                                        "ابتدا اجازه ارسال گفتار به سرویس ابری را تأیید کن."
                                     }
-                                    directGeminiSettings.save(directGeminiKey)
-                                    directGeminiKey = ""
+                                    cloudflareSettings.save(cloudflareAccountId, cloudflareApiToken)
+                                    cloudflareApiToken = ""
                                     agentOptIn = true
                                     agentPrefs.edit().putBoolean("enabled", true).apply()
                                 }.onSuccess {
-                                    Toast.makeText(context,
-                                        "Gemini روی این گوشی فعال شد", Toast.LENGTH_LONG).show()
-                                }.onFailure { error ->
-                                    Toast.makeText(context, error.localizedMessage,
+                                    Toast.makeText(context, "Workers AI برای پردازش خودکار فعال شد",
+                                        Toast.LENGTH_LONG).show()
+                                }.onFailure {
+                                    Toast.makeText(context, it.localizedMessage.orEmpty(),
                                         Toast.LENGTH_LONG).show()
                                 }
-                            }) { Text("فعال‌سازی Gemini رایگان") }
+                            }, enabled = cloudflareAccountId.isNotBlank() &&
+                                    cloudflareApiToken.isNotBlank()) {
+                                Text("فعال‌سازی هوش مصنوعی")
+                            }
                         }
-                        TextButton(onClick = { showDeveloperSettings = !showDeveloperSettings }) {
-                            Text(if (showDeveloperSettings) "بستن تنظیمات توسعه‌دهنده"
-                                else "اتصال پیشرفته (مدیر سیستم)")
-                        }
-                        if (showDeveloperSettings) {
-                        OutlinedTextField(value = agentUrl, onValueChange = { agentUrl = it },
-                            label = { Text("آدرس HTTPS سرور Agent") },
-                            singleLine = true, modifier = Modifier.fillMaxWidth())
-                        OutlinedTextField(value = agentPairingToken,
-                            onValueChange = { agentPairingToken = it },
-                            label = { Text("کد اتصال اختصاصی سرور") },
-                            visualTransformation = PasswordVisualTransformation(),
-                            singleLine = true, modifier = Modifier.fillMaxWidth())
-                        Row(verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(onClick = {
-                                runCatching {
-                                    require(agentPrivacyConsent) {
-                                        "برای فعال‌سازی Agent، ابتدا اجازه ارسال متن به مدل ابری را تأیید کن."
-                                    }
-                                    textAgentSettings.save(agentUrl, agentPairingToken)
-                                    agentPairingToken = ""
-                                    agentOptIn = true
-                                    agentPrefs.edit().putBoolean("enabled", true).apply()
-                                }.onSuccess {
-                                    Toast.makeText(context, "تنظیمات Agent ذخیره شد", Toast.LENGTH_SHORT).show()
-                                }.onFailure { error ->
-                                    Toast.makeText(context, error.localizedMessage, Toast.LENGTH_LONG).show()
-                                }
-                            }) { Text("ذخیره اتصال") }
-                            Text("فعال", style = MaterialTheme.typography.bodySmall)
-                            Switch(checked = agentOptIn,
-                                enabled = (directGeminiSettings.configured ||
-                                    textAgentSettings.configured) && agentPrivacyConsent,
-                                onCheckedChange = { value ->
-                                    agentOptIn = value && agentPrivacyConsent
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("پردازش خودکار", modifier = Modifier.weight(1f))
+                            Switch(checked = agentOptIn && cloudflareSettings.configured,
+                                enabled = cloudflareSettings.configured && agentPrivacyConsent,
+                                onCheckedChange = { enabled ->
+                                    agentOptIn = enabled && agentPrivacyConsent
                                     agentPrefs.edit().putBoolean("enabled", agentOptIn).apply()
                                 })
                         }
+                        if (cloudflareSettings.configured) {
+                            TextButton(onClick = {
+                                cloudflareSettings.clear()
+                                agentOptIn = false
+                                agentPrefs.edit().putBoolean("enabled", false).apply()
+                            }) { Text("حذف اتصال Cloudflare") }
                         }
-                        if (agentBusy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                        agentMessages.forEach { message ->
-                            Text(message, style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.secondary)
+                        if (agentBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
+                        agentMessages.takeLast(2).forEach {
+                            Text(it, style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }
