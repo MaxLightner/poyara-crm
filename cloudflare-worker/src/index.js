@@ -108,9 +108,41 @@ export default {
     if (url.pathname === "/health" && request.method === "GET") {
       return json({ status: "ok", service: "poyara-central-agent", provider: "cloudflare", model: MODEL });
     }
-    if (url.pathname !== "/v1/text/analyze") return json({error:"Not found"},404);
+    const isText = url.pathname === "/v1/text/analyze";
+    const isAudio = url.pathname === "/v1/audio/transcribe";
+    const isAuthCheck = url.pathname === "/v1/auth/check";
+    if (!isText && !isAudio && !isAuthCheck) return json({error:"Not found"},404);
     if (request.method !== "POST") return json({error:"Method not allowed"},405);
     if (!await authenticated(request, env.POYARA_APP_ACCESS_KEY)) return json({error:"Unauthorized"},401);
+    if (isAuthCheck) return json({status:"ok", service:"poyara-central-agent"});
+    // Rate limit before running any billable model, even though the AI model
+    // itself is free within Cloudflare's finite daily allocation.
+    if (env.REQUEST_LIMITER) {
+      const ip = request.headers.get("cf-connecting-ip") || "unknown";
+      const { success } = await env.REQUEST_LIMITER.limit({ key: ip });
+      if (!success) return json({error:"Too many requests"},429);
+    }
+    if (isAudio) {
+      if (!env.AI) return json({error:"AI binding unavailable"},503);
+      const type = request.headers.get("content-type") || "";
+      if (!/^audio\/(?:mp4|m4a|x-m4a|aac|mpeg|wav)(?:;|$)/i.test(type))
+        return json({error:"Unsupported audio format"},415);
+      const size = Number(request.headers.get("content-length") || 0);
+      if (size > 4 * 1024 * 1024) return json({error:"Audio exceeds 4 MiB"},413);
+      const bytes = new Uint8Array(await request.arrayBuffer());
+      if (bytes.length < 256 || bytes.length > 4 * 1024 * 1024)
+        return json({error:"Invalid audio length"},413);
+      try {
+        const result = await env.AI.run("@cf/openai/whisper", {
+          audio: [...bytes], source_lang: "fa"
+        });
+        const transcript = result?.text?.trim() || "";
+        if (!transcript) return json({error:"No speech recognized"},422);
+        return json({text:transcript.slice(0,10000)});
+      } catch {
+        return json({error:"Audio transcription unavailable. Try live dictation"},503);
+      }
+    }
     const length = Number(request.headers.get("content-length") || 0);
     if (length > 32000) return json({error:"Request too large"},413);
     const raw = await request.text();
