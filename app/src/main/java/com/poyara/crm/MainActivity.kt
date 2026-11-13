@@ -711,7 +711,7 @@ private fun CrmHome(initialRecordId: Long) {
         val lat = saved?.latitude ?: draftLatitude
         val lon = saved?.longitude ?: draftLongitude
         val locationName = saved?.company?.ifBlank { VoiceLocalFacts.extract(saved.note).company }
-            ?.ifBlank { saved.name }?.ifBlank { null }
+            ?.ifBlank { saved.name }?.takeIf { it.isNotBlank() }
             ?: companyName.ifBlank { VoiceLocalFacts.extract(note).company }
                 .ifBlank { personName }.ifBlank { "موقعیت مجموعه" }
         val target = Intent(context, OfflineMapActivity::class.java)
