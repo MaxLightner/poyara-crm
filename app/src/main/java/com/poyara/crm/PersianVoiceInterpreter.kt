@@ -47,19 +47,14 @@ internal object PersianVoiceInterpreter {
         "چهارصد" to 400, "پانصد" to 500, "ششصد" to 600,
         "هفتصد" to 700, "هشتصد" to 800, "نهصد" to 900
     )
+    // More specific weekdays first: شنبه is a suffix of پنجشنبه/سه شنبه.
     private val dayNames = listOf(
-        "شنبه" to DayOfWeek.SATURDAY,
-        "یکشنبه" to DayOfWeek.SUNDAY,
-        "یک شنبه" to DayOfWeek.SUNDAY,
-        "دوشنبه" to DayOfWeek.MONDAY,
-        "دو شنبه" to DayOfWeek.MONDAY,
-        "سه‌شنبه" to DayOfWeek.TUESDAY,
-        "سه شنبه" to DayOfWeek.TUESDAY,
-        "چهارشنبه" to DayOfWeek.WEDNESDAY,
-        "چهار شنبه" to DayOfWeek.WEDNESDAY,
-        "پنجشنبه" to DayOfWeek.THURSDAY,
-        "پنج شنبه" to DayOfWeek.THURSDAY,
-        "جمعه" to DayOfWeek.FRIDAY
+        "یک شنبه" to DayOfWeek.SUNDAY, "یکشنبه" to DayOfWeek.SUNDAY,
+        "دو شنبه" to DayOfWeek.MONDAY, "دوشنبه" to DayOfWeek.MONDAY,
+        "سه شنبه" to DayOfWeek.TUESDAY, "سه‌شنبه" to DayOfWeek.TUESDAY,
+        "چهار شنبه" to DayOfWeek.WEDNESDAY, "چهارشنبه" to DayOfWeek.WEDNESDAY,
+        "پنج شنبه" to DayOfWeek.THURSDAY, "پنجشنبه" to DayOfWeek.THURSDAY,
+        "جمعه" to DayOfWeek.FRIDAY, "شنبه" to DayOfWeek.SATURDAY
     )
 
     fun normalize(text: String): String = buildString {
@@ -230,9 +225,7 @@ internal object PersianVoiceInterpreter {
                 "ساعت $category صبح است یا عصر؟ با ویس کوتاه اصلاح کن.")
         }
 
-        val today = LocalDate.now(zone).let {
-            java.time.Instant.ofEpochMilli(nowMs).atZone(zone).toLocalDate()
-        }
+        val today = java.time.Instant.ofEpochMilli(nowMs).atZone(zone).toLocalDate()
         val day = when {
             text.contains("پس فردا") || text.contains("پسفردا") -> today.plusDays(2)
             text.contains("فردا") -> today.plusDays(1)
