@@ -12,8 +12,8 @@ android {
         applicationId = "com.poyara.crm"
         minSdk = 26
         targetSdk = 35
-        versionCode = 17
-        versionName = "0.16.1"
+        versionCode = 18
+        versionName = "0.17.0"
     }
 
     buildTypes {
