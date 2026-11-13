@@ -129,6 +129,23 @@ private fun CrmHome(initialRecordId: Long) {
     var agentUrl by rememberSaveable { mutableStateOf(textAgentSettings.endpoint) }
     var agentPairingToken by remember { mutableStateOf("") }
     var agentBusy by remember { mutableStateOf(false) }
+    var pendingVoiceTranscript by rememberSaveable { mutableStateOf("") }
+    var pendingVoiceFilePath by rememberSaveable { mutableStateOf("") }
+    var voiceTranscribing by remember { mutableStateOf(false) }
+    var voiceFileReader by remember { mutableStateOf<VoiceFileTranscriber?>(null) }
+    var showExtraDetails by rememberSaveable { mutableStateOf(false) }
+    var showMapDetails by rememberSaveable { mutableStateOf(false) }
+    var showReminderDetails by rememberSaveable { mutableStateOf(false) }
+    var showAttachments by rememberSaveable { mutableStateOf(false) }
+    var showCallHistory by rememberSaveable { mutableStateOf(false) }
+    var showAllGroups by rememberSaveable { mutableStateOf(false) }
+    var showAllRoles by rememberSaveable { mutableStateOf(false) }
+    var customCategories by remember {
+        mutableStateOf(context.getSharedPreferences("crm_categories", Context.MODE_PRIVATE)
+            .getStringSet("names", emptySet()).orEmpty().toSet())
+    }
+    var newCategoryName by rememberSaveable { mutableStateOf("") }
+    var addCategoryDialog by remember { mutableStateOf(false) }
     var agentMessages by remember { mutableStateOf<List<String>>(emptyList()) }
     var page by rememberSaveable { mutableStateOf("capture") }
     val startupEntry = remember(initialRecordId) { db.all().find { it.id == initialRecordId } }
@@ -202,7 +219,10 @@ private fun CrmHome(initialRecordId: Long) {
     var lastVoiceActions by remember { mutableStateOf<List<String>>(emptyList()) }
     var needVoiceNotificationPermission by remember { mutableStateOf(false) }
     DisposableEffect(Unit) {
-        onDispose { googleSession?.cancel() }
+        onDispose {
+            googleSession?.cancel()
+            voiceFileReader?.cancel()
+        }
     }
     LaunchedEffect(isRecording) {
         while (isRecording) {
@@ -324,12 +344,27 @@ private fun CrmHome(initialRecordId: Long) {
         return id
     }
 
+    fun appendRawSpeech(transcript: String) {
+        val value = transcript.trim()
+        if (value.isBlank()) return
+        // User first reviews raw speech; no CRM commands run until Process is tapped.
+        val next = listOf(note.trim(), value).filter { it.isNotBlank() }
+            .joinToString("\n\n")
+        note = next
+        pendingVoiceTranscript = listOf(pendingVoiceTranscript, value)
+            .filter { it.isNotBlank() }.joinToString("\n")
+        save(newNote = next)
+        agentMessages = listOf("گفتار به کادر اضافه شد. برای اجرای دستورها، «پردازش» را بزن.")
+    }
+
     // Voice input is the user's source of truth. Keep the original transcript,
     // apply only deterministic, high-confidence CRM commands, and preserve older
     // values unless the speaker explicitly says a correction.
     fun addSpeechToCapture(transcript: String) {
-        if (transcript.isBlank()) return
-        val actions = PersianVoiceInterpreter.parse(transcript, personName, companyName, phone)
+        if (transcript.isBlank() && pendingVoiceFilePath.isBlank()) return
+        val actions = PersianVoiceInterpreter.parse(
+            if (agentOptIn && textAgentSettings.configured) "" else transcript,
+            personName, companyName, phone)
         val previousName = personName
         val previousCompany = companyName
         val previousPhone = phone
@@ -498,7 +533,15 @@ private fun CrmHome(initialRecordId: Long) {
             coroutineScope.launch {
                 val result = withContext(Dispatchers.IO) {
                     runCatching { CrmTextAgentClient(context.applicationContext)
-                        .analyze(transcript, db.all().filter { it.id == sourceEntryId }) }
+                        .let { client ->
+                            val audio = pendingVoiceFilePath.takeIf { it.isNotBlank() }
+                                ?.let { File(it) }?.takeIf { it.isFile }
+                            val sameContact = db.all().filter { it.id == sourceEntryId }
+                            if (audio != null)
+                                client.analyzeAudio(audio, transcript, sameContact,
+                                    db.allReminders().filter { it.entryId == sourceEntryId })
+                            else client.analyze(transcript, sameContact)
+                        } }
                 }
                 agentBusy = false
                 result.onSuccess { json ->
@@ -680,8 +723,8 @@ private fun CrmHome(initialRecordId: Long) {
                 if (text.isNullOrBlank()) {
                     recordingError = error ?: "سرویس گفتار گوشی متنی برنگرداند."
                 } else {
-                    addSpeechToCapture(text)
-                    Toast.makeText(context, "متن گفتار به کادر بالا اضافه شد", Toast.LENGTH_SHORT).show()
+                    appendRawSpeech(text)
+                    Toast.makeText(context, "متن در کادر آماده پردازش است", Toast.LENGTH_SHORT).show()
                 }
             }
         )
@@ -781,9 +824,23 @@ private fun CrmHome(initialRecordId: Long) {
             } else {
                 addDraftAttachment("audio", target)
             }
-            // No network access: the original M4A stays in the app's private storage.
-            // Child panel starts file transcription automatically after the recording stops.
-            pendingAutoTranscriptions = pendingAutoTranscriptions + target.absolutePath
+            // Original audio stays available for AI analysis of background noise.
+            pendingVoiceFilePath = target.absolutePath
+            voiceFileReader?.cancel()
+            voiceTranscribing = true
+            val reader = VoiceFileTranscriber(context.applicationContext)
+            voiceFileReader = reader
+            reader.transcribe(target, onStage = { googleVoiceStage = it },
+                onFinish = { text, error ->
+                    voiceTranscribing = false
+                    voiceFileReader = null
+                    if (!text.isNullOrBlank()) appendRawSpeech(text)
+                    else {
+                        val placeholder = "صدای ضبط‌شده آماده پردازش است؛ متن اولیه تشخیص داده نشد."
+                        if (note.isBlank()) { note = placeholder; save(newNote = placeholder) }
+                        agentMessages = listOf(error ?: placeholder)
+                    }
+                })
         } catch (error: Exception) {
             recordingError = "صدا ذخیره شد، اما اتصال به پرونده کامل نشد: " +
                 (error.localizedMessage ?: "خطا")
