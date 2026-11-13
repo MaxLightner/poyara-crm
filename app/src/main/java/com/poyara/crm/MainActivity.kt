@@ -1925,32 +1925,22 @@ private fun CrmHome(initialRecordId: Long) {
                 modifier = Modifier.fillMaxWidth()
             ) { Text("⌖ نقشه مشتریان و افراد اطراف من") }
             // Backup data support is retained for migration, but controls are hidden from contacts.
-            Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
-                Column(Modifier.fillMaxWidth().padding(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                    Text("مخاطبین مشترک با Google Contacts", fontWeight = FontWeight.SemiBold)
-                    Text(if (googleAccount.isBlank()) "حساب گوگل انتخاب نشده است"
-                        else "حساب انتخاب‌شده: " + googleAccount,
-                        style = MaterialTheme.typography.bodySmall)
-                    Text("فقط مخاطبین دارای شناسه پویارا وارد می‌شوند. با همگام‌سازی، نام، شماره، سمت، گروه و یادداشت‌های CRM در Google Contacts همین حساب ذخیره می‌شوند. همگام‌سازی خود Google باید در تنظیمات گوشی روشن باشد.",
-                        style = MaterialTheme.typography.bodySmall)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = {
-                            runCatching {
-                                accountPicker.launch(AccountManager.newChooseAccountIntent(
-                                    null, null, arrayOf("com.google"), false,
-                                    null, null, null, null))
-                            }.onFailure {
-                                Toast.makeText(context, "حساب گوگل را ابتدا به تنظیمات گوشی اضافه کن",
-                                    Toast.LENGTH_LONG).show()
-                            }
-                        }) { Text("انتخاب حساب گوگل") }
-                        if (googleAccount.isNotBlank()) {
-                            OutlinedButton(onClick = { requestGoogleSync() },
-                                enabled = !googleSyncBusy) {
-                                Text(if (googleSyncBusy) "در حال همگام‌سازی" else "همگام‌سازی")
-                            }
-                        }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = {
+                    runCatching {
+                        accountPicker.launch(AccountManager.newChooseAccountIntent(
+                            null, null, arrayOf("com.google"), false,
+                            null, null, null, null))
+                    }.onFailure {
+                        Toast.makeText(context, "حساب گوگل را در تنظیمات گوشی اضافه کن",
+                            Toast.LENGTH_SHORT).show()
+                    }
+                }) { Text(if (googleAccount.isBlank()) "+ افزودن حساب گوگل"
+                    else "✓ حساب گوگل") }
+                if (googleAccount.isNotBlank()) {
+                    TextButton(onClick = { requestGoogleSync() }, enabled = !googleSyncBusy) {
+                        Text(if (googleSyncBusy) "در حال همگام‌سازی..." else "همگام‌سازی")
                     }
                 }
             }
@@ -1973,18 +1963,44 @@ private fun CrmHome(initialRecordId: Long) {
                     )
                 }
             }
-            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                (listOf("همه گروه‌ها") + allEntries.map { it.category.ifBlank { "دسته‌بندی‌نشده" } }.distinct().sorted()).forEach { category ->
-                    FilterChip(selected = filterCategory == category,
-                        onClick = { filterCategory = category }, label = { Text(category) })
+            Row(Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                TextButton(onClick = { showAllGroups = !showAllGroups }) {
+                    Text("گروه‌ها: " + filterCategory +
+                        if (showAllGroups) " ▲" else " ▼")
+                }
+                TextButton(onClick = { addCategoryDialog = true }) { Text("+ گروه جدید") }
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = { showAllRoles = !showAllRoles }) {
+                    Text(if (showAllRoles) "سمت‌ها ▲" else "سمت‌ها ▼")
                 }
             }
-            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                (listOf("همه سمت‌ها") + allEntries.mapNotNull { it.role.takeIf(String::isNotBlank) }.distinct().sorted()).forEach { role ->
-                    FilterChip(selected = filterRole == role,
-                        onClick = { filterRole = role }, label = { Text(role) })
+            if (showAllGroups) {
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                    (listOf("همه گروه‌ها", "دسته‌بندی‌نشده") +
+                        categoryChoices + customCategories +
+                        allEntries.map { it.category }.filter { it.isNotBlank() })
+                        .distinct().sorted().forEach { category ->
+                        FilterChip(selected = filterCategory == category,
+                            onClick = {
+                                filterCategory = category
+                                showAllGroups = false
+                            }, label = { Text(category) })
+                    }
+                }
+            }
+            if (showAllRoles) {
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                    (listOf("همه سمت‌ها") +
+                        allEntries.mapNotNull { it.role.takeIf(String::isNotBlank) })
+                        .distinct().sorted().forEach { role ->
+                        FilterChip(selected = filterRole == role,
+                            onClick = { filterRole = role; showAllRoles = false },
+                            label = { Text(role) })
+                    }
                 }
             }
             val filtered = allEntries.filter { entry ->
@@ -2114,6 +2130,66 @@ private fun CrmHome(initialRecordId: Long) {
                     }
                 }
             }
+        }
+        if (addCategoryDialog) {
+            AlertDialog(
+                onDismissRequest = { addCategoryDialog = false },
+                title = { Text("افزودن گروه جدید") },
+                text = {
+                    OutlinedTextField(
+                        value = newCategoryName,
+                        onValueChange = { newCategoryName = it },
+                        label = { Text("مثلاً فروشگاه مبلمان") },
+                        singleLine = true
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val value = newCategoryName.trim().take(100)
+                        if (value.isNotBlank()) {
+                            customCategories = customCategories + value
+                            context.getSharedPreferences("crm_categories", Context.MODE_PRIVATE)
+                                .edit().putStringSet("names", customCategories).apply()
+                            if (page == "capture") {
+                                contactCategory = value
+                                save()
+                            } else {
+                                filterCategory = value
+                            }
+                        }
+                        newCategoryName = ""
+                        addCategoryDialog = false
+                    }, enabled = newCategoryName.isNotBlank()) { Text("افزودن") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { addCategoryDialog = false }) { Text("انصراف") }
+                }
+            )
+        }
+        if (pendingDeleteReminderId > 0L) {
+            AlertDialog(
+                onDismissRequest = { pendingDeleteReminderId = 0L },
+                title = { Text("حذف قرار کاری") },
+                text = { Text("قرار «" + pendingDeleteReminderTitle + "» حذف شود؟") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val target = db.allReminders().firstOrNull {
+                            it.id == pendingDeleteReminderId && it.entryId == recordId }
+                        if (target != null) {
+                            ReminderScheduler.cancel(context, target.id)
+                            db.deleteReminder(target.id)
+                            refresh()
+                        }
+                        pendingDeleteReminderId = 0L
+                        pendingDeleteReminderTitle = ""
+                    }) { Text("بله، حذف شود") }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        pendingDeleteReminderId = 0L
+                    }) { Text("انصراف") }
+                }
+            )
         }
         if (showScanDialog) {
             AlertDialog(
