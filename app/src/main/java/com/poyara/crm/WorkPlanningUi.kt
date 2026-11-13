@@ -188,25 +188,14 @@ fun WeeklyAgenda(
     onChanged: () -> Unit
 ) {
     val context = LocalContext.current
-    val week = remember(refreshKey) {
-        val start = Calendar.getInstance().apply {
-            set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0)
-            set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
-            val day = get(Calendar.DAY_OF_WEEK)
-            val daysFromSaturday = day % 7
-            add(Calendar.DAY_OF_MONTH, -daysFromSaturday)
-        }
-        val end = (start.clone() as Calendar).apply { add(Calendar.DAY_OF_MONTH, 7) }
-        start.timeInMillis to end.timeInMillis
-    }
     var showOnlyWeek by remember { mutableStateOf(false) }
-    val reminders = remember(refreshKey, week, showOnlyWeek) {
-        val all = db.allReminders(includeDone = true)
-        if (showOnlyWeek)
-            all.filter { it.dueAt >= week.first && it.dueAt < week.second }
-        else
-            all.filter { it.dueAt >= System.currentTimeMillis() - 12 * 60 * 60 * 1000L }
-                .sortedBy { it.dueAt }
+    // Re-read database on refresh and keep next week's events visible by default.
+    val reminders = remember(refreshKey, showOnlyWeek) {
+        AgendaFilters.visible(
+            db.allReminders(includeDone = true),
+            System.currentTimeMillis(),
+            showOnlyWeek
+        )
     }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("برنامه کاری", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
