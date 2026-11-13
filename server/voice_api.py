@@ -17,7 +17,7 @@ import httpx
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from fastapi.responses import JSONResponse
-from gemini_agent import extract_gemini_proposal, DEFAULT_GEMINI_MODEL
+from gemini_agent import extract_gemini_proposal, extract_gemini_audio_proposal, DEFAULT_GEMINI_MODEL
 
 MAX_AUDIO_BYTES = 25 * 1024 * 1024
 OPENAI_ENDPOINT = "https://api.openai.com/v1"
@@ -42,6 +42,23 @@ REMINDER_PROPERTIES = {
 PROPOSAL_SCHEMA = {
     "type": "object",
     "properties": {
+        "corrected_text": {"type": "string"},
+        "actions": {"type": "array", "items": {
+            "type": "object", "properties": {
+                "type": {"type": "string", "enum": [
+                    "correct_name", "add_phone", "set_role", "set_category",
+                    "create_reminder", "update_reminder", "delete_reminder", "append_note"]},
+                "value": {"type": ["string", "null"]},
+                "target_reminder_id": {"type": ["integer", "null"]},
+                "title": {"type": ["string", "null"]},
+                "date_iso": {"type": ["string", "null"]},
+                "time_local": {"type": ["string", "null"]},
+                "requires_confirmation": {"type": "boolean"}
+            },
+            "required": ["type", "value", "target_reminder_id", "title",
+                "date_iso", "time_local", "requires_confirmation"],
+            "additionalProperties": False
+        }},
         "contacts": {"type": "array", "items": {
             "type": "object", "properties": CONTACT_PROPERTIES,
             "required": list(CONTACT_PROPERTIES), "additionalProperties": False}},
@@ -50,7 +67,7 @@ PROPOSAL_SCHEMA = {
             "required": list(REMINDER_PROPERTIES), "additionalProperties": False}},
         "questions": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["contacts", "reminders", "questions"],
+    "required": ["contacts", "reminders", "questions", "corrected_text", "actions"],
     "additionalProperties": False,
 }
 
@@ -88,6 +105,7 @@ class TextAgentRequest(BaseModel):
     transcript: str = Field(min_length=1, max_length=10000)
     contacts: list[dict] = Field(default_factory=list)
     timezone: str = Field(default="Asia/Tehran", max_length=60)
+    reminders: list[dict] = Field(default_factory=list)
 
 
 @app.post("/v1/text/analyze")
@@ -115,6 +133,16 @@ async def analyze_text(
         "date and time may be returned without confirmation. Ensure reminders "
         "are future and date_iso is Gregorian YYYY-MM-DD; time_local is HH:mm. "
         "If an exact participant is ambiguous, requires_confirmation=true. "
+        "Transcribe or normalize natural Persian accurately. Keep corrected_text as a "
+        "clean readable version of the supplied text; preserve actual facts. "
+        "If the speaker corrects their own surname or number, use the final explicit "
+        "correction and add action correct_name or add_phone only as appropriate. "
+        "Use the actions array for commands: add_phone, set_role, set_category, "
+        "create_reminder, update_reminder, delete_reminder, append_note, correct_name. "
+        "Never invent an ID; target_reminder_id must come from known_reminders "
+        "provided in context. If the user only says 'ساعت سه', interpret a likely "
+        "working afternoon as 15:00 only when an explicit date is given; otherwise "
+        "ask which date to use and requires_confirmation=true. "
         "Never write data, send a message, or call anyone. Return proposal only."
     )
     try:
@@ -126,6 +154,7 @@ async def analyze_text(
         "timezone": request.timezone,
         "transcript": transcript,
         "known_contacts": trim_context(json.dumps(request.contacts, ensure_ascii=False)),
+        "known_reminders": request.reminders[:15],
     }, ensure_ascii=False)
     if provider == "gemini":
         proposals = await extract_gemini_proposal(
@@ -191,9 +220,81 @@ async def analyze_text(
             reminder["date_iso"] = None
             reminder["time_local"] = None
             reminder["requires_confirmation"] = True
-    return {"status": "needs_review", "contacts": proposals["contacts"][:10],
+    return {"status": "needs_review", "corrected_text": proposals.get("corrected_text", ""),
+            "actions": proposals.get("actions", [])[:15], "contacts": proposals["contacts"][:10],
             "reminders": proposals["reminders"][:10],
             "questions": proposals["questions"][:10]}
+
+
+@app.post("/v1/audio/analyze")
+async def analyze_audio_gemini(
+    audio: UploadFile = File(...),
+    context_json: str = Form("{}"),
+    authorization: str | None = Header(None),
+):
+    """One-tap multimodal voice-to-CRM analysis with the original M4A file.
+
+    No automatic mutation: caller validates every structured operation.
+    """
+    require_pilot_auth(authorization)
+    if os.getenv("POYARA_TEXT_PROVIDER", "gemini") != "gemini":
+        raise HTTPException(503, "Audio-free-tier path requires Gemini provider")
+    try:
+        context = json.loads(context_json)
+        if not isinstance(context, dict):
+            raise ValueError()
+        request = TextAgentRequest(
+            transcript=str(context.get("transcript", "")).strip() or " ",
+            timezone=str(context.get("timezone", "Asia/Tehran")),
+            contacts=context.get("contacts", [])[:1],
+            reminders=context.get("reminders", [])[:15],
+        )
+        target_zone = ZoneInfo(request.timezone)
+    except (ValueError, TypeError, KeyError):
+        raise HTTPException(422, "Invalid audio processing context")
+    if audio.content_type not in ("audio/mp4", "audio/m4a", "audio/x-m4a",
+                                  "application/octet-stream"):
+        raise HTTPException(415, "Expected an M4A voice recording")
+    blob = await audio.read(10 * 1024 * 1024 + 1)
+    await audio.close()
+    if not 256 <= len(blob) <= 10 * 1024 * 1024:
+        raise HTTPException(413, "Voice recording exceeds free-tier file limit")
+    instructions = (
+        "Listen carefully to the original Persian audio. Ignore background speakers "
+        "unless the user is explicitly reporting their words; distinguish the main "
+        "speaker even in noisy environments when possible. Preserve phone digits "
+        "in spoken order, read surnames and companies carefully. Pay special "
+        "attention to later self-corrections: a corrected final name replaces "
+        "the earlier one. Do not invent missing digits. Extract fields and work "
+        "actions from clear commands, with the JSON output schema provided. "
+        "corrected_text must contain a readable Persian transcription corrected "
+        "for spelling and grammar but not altered facts. For dates without "
+        "sufficient day or morning/afternoon, ask a question and mark as needing "
+        "confirmation; never create a guessed calendar event. "
+        "Known reminders may be referenced by their exact ID for update or deletion. "
+        "Only respond with structured JSON, no explanation."
+    )
+    context_payload = json.dumps({
+        "now_local": datetime.now(target_zone).isoformat(),
+        "timezone": request.timezone,
+        "transcript_hint": request.transcript,
+        "known_contacts": trim_context(json.dumps(request.contacts, ensure_ascii=False)),
+        "known_reminders": request.reminders,
+    }, ensure_ascii=False)
+    proposal = await extract_gemini_audio_proposal(
+        api_key=os.getenv("GEMINI_API_KEY", ""),
+        model=os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL),
+        instructions=instructions, payload=context_payload,
+        schema=PROPOSAL_SCHEMA, audio=blob,
+    )
+    return {
+        "status": "needs_review",
+        "corrected_text": proposal.get("corrected_text", ""),
+        "contacts": proposal.get("contacts", [])[:10],
+        "reminders": proposal.get("reminders", [])[:10],
+        "actions": proposal.get("actions", [])[:15],
+        "questions": proposal.get("questions", [])[:10],
+    }
 
 
 @app.get("/health")
