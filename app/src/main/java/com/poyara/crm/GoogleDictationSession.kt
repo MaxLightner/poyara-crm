@@ -87,7 +87,7 @@ internal class GoogleDictationSession(
                 override fun onError(error: Int) {
                     if (done) return
                     if (stopped) {
-                        if (completed.isEmpty()) append(lastPartial)
+                        append(lastPartial)
                         complete()
                         return
                     }
@@ -149,7 +149,7 @@ internal class GoogleDictationSession(
         } catch (_: Exception) { complete(); return }
         val task = Runnable {
             if (!done) {
-                if (completed.isEmpty()) append(lastPartial)
+                append(lastPartial)
                 complete()
             }
         }
@@ -159,7 +159,7 @@ internal class GoogleDictationSession(
 
     private fun complete() {
         if (done) return
-        if (completed.isEmpty()) append(lastPartial)
+        append(lastPartial)
         val text = completed.joinToString(" ").trim()
         val error = if (text.isNotBlank()) null
             else lastError ?: "متنی تشخیص داده نشد؛ سرویس گفتار گوشی پاسخ نداد."
