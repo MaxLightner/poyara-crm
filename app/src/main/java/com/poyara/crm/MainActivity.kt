@@ -163,6 +163,9 @@ private fun CrmHome(initialRecordId: Long) {
     var googleVoiceStage by remember { mutableStateOf("") }
     var googleSession by remember { mutableStateOf<GoogleDictationSession?>(null) }
     var pendingAutoTranscriptions by remember { mutableStateOf<List<String>>(emptyList()) }
+    DisposableEffect(Unit) {
+        onDispose { googleSession?.cancel() }
+    }
     LaunchedEffect(isRecording) {
         while (isRecording) {
             recordingClock = SystemClock.elapsedRealtime()
@@ -835,40 +838,76 @@ private fun CrmHome(initialRecordId: Long) {
                     Column(Modifier.fillMaxWidth().padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
-                            if (isRecording) "● ضبط فعال است — راحت و بدون دیدن متن صحبت کن"
-                            else "ضبط صوت مشتری",
+                            if (isRecording) "● در حال صحبت؛ متن تا پایان نمایش داده نمی‌شود"
+                            else if (googleVoiceBusy) "در حال دریافت نتیجه نهایی..."
+                            else "ثبت گفتار مشتری",
                             fontWeight = FontWeight.Bold,
                             color = if (isRecording) Color(0xFF9C2929) else Color(0xFF08685F)
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FilterChip(
+                                selected = googleVoiceMode,
+                                enabled = !isRecording && !googleVoiceBusy,
+                                onClick = { googleVoiceMode = true; recordingError = "" },
+                                label = { Text("گوگل · متن") }
+                            )
+                            FilterChip(
+                                selected = !googleVoiceMode,
+                                enabled = !isRecording && !googleVoiceBusy,
+                                onClick = { googleVoiceMode = false; recordingError = "" },
+                                label = { Text("ضبط فایل صوتی") }
+                            )
+                        }
+                        Text(
+                            if (googleVoiceMode)
+                                "گوگل هنگام صحبت گوش می‌دهد؛ هیچ متن زنده‌ای نمایش داده نمی‌شود. بعد از «پایان»، متن خودکار در کادر اصلی ثبت می‌شود. این حالت فایل صوتی ذخیره نمی‌کند."
+                            else
+                                "فایل صوتی ذخیره می‌شود. تبدیل فایل ذخیره‌شده با سرویس گوگل در بعضی گوشی‌ها پشتیبانی نمی‌شود.",
+                            style = MaterialTheme.typography.bodySmall
                         )
                         if (isRecording) {
                             val seconds = ((recordingClock - recordingStartedAt) / 1000L).coerceAtLeast(0L)
                             Text("%02d:%02d".format(seconds / 60L, seconds % 60L),
                                 style = MaterialTheme.typography.headlineMedium,
                                 fontWeight = FontWeight.Bold)
-                        } else {
-                            Text("بعد از پایان ضبط، تبدیل به متن خودکار آغاز می‌شود.",
-                                style = MaterialTheme.typography.bodySmall)
+                        }
+                        if (googleVoiceBusy) {
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        }
+                        if (googleVoiceStage.isNotBlank() && (googleVoiceMode || googleVoiceBusy)) {
+                            Text(googleVoiceStage, style = MaterialTheme.typography.labelSmall)
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(
                                 onClick = {
-                                    if (isRecording) stopRecording()
-                                    else if (context.checkSelfPermission(
+                                    if (isRecording) {
+                                        if (googleVoiceMode) stopGoogleDictation()
+                                        else stopRecording()
+                                    } else if (context.checkSelfPermission(
                                         Manifest.permission.RECORD_AUDIO
-                                    ) == PackageManager.PERMISSION_GRANTED) beginRecording()
-                                    else {
+                                    ) == PackageManager.PERMISSION_GRANTED) {
+                                        if (googleVoiceMode) beginGoogleDictation()
+                                        else beginRecording()
+                                    } else {
                                         recordingError = "درخواست مجوز میکروفون…"
                                         permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                                     }
                                 },
+                                enabled = !googleVoiceBusy,
                                 modifier = Modifier.weight(1f),
                                 colors = if (isRecording) ButtonDefaults.buttonColors(
                                     containerColor = Color(0xFFB42626)
                                 ) else ButtonDefaults.buttonColors()
-                            ) { Text(if (isRecording) "■ پایان ضبط" else "● شروع ضبط صوت") }
+                            ) {
+                                Text(
+                                    if (isRecording) "■ پایان"
+                                    else if (googleVoiceMode) "● شروع گفتار"
+                                    else "● ضبط فایل صوتی"
+                                )
+                            }
                             OutlinedButton(
                                 onClick = { takePhoto() },
-                                enabled = !isRecording
+                                enabled = !isRecording && !googleVoiceBusy
                             ) { Text("📷 عکس") }
                         }
                         if (recordingError.isNotBlank()) {
