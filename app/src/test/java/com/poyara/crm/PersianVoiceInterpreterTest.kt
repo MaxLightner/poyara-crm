@@ -129,9 +129,9 @@ class PersianVoiceInterpreterTest {
             "احمدی", "مبلمان لیپاریس", "09150000000", emptyList(), emptyList())
         val updated = VoiceCaptureDocument.merge(earlier, "شماره درست 09158151204",
             "احمدی", "مبلمان لیپاریس", "09158151204", emptyList(), emptyList())
-        assertTrue(updated.contains("شماره: 09158151204"))
+        assertFalse(updated.contains("【خلاصه خودکار پویارا】\\nشماره:"))
         assertTrue(updated.contains("شماره 09150000000"))
         assertTrue(updated.contains("شماره درست 09158151204"))
-        assertEquals(1, "【خلاصه خودکار پویارا】".toRegex().findAll(updated).count())
+        assertEquals(0, "【خلاصه خودکار پویارا】".toRegex().findAll(updated).count())
     }
 }
