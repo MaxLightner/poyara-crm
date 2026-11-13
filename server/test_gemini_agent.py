@@ -16,6 +16,8 @@ from voice_api import app, PROPOSAL_SCHEMA
 
 
 SAMPLE = {
+    "corrected_text": "آقای حسینی مدیر مبلمان لیپاریس است.",
+    "actions": [],
     "contacts": [{
         "name": "حسینی", "phone": "۰۹۱۵۸۱۵۱۲۰۴", "company": "مبلمان لیپاریس",
         "role": "مدیر", "category": "مبل‌فروشی", "address": None,
