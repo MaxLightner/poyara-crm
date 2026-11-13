@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/publish-beta-apk.yml'
+      - 'app/build.gradle.kts'
   workflow_dispatch:
 
 permissions:
@@ -29,21 +30,24 @@ jobs:
         run: |
           set -euo pipefail
           test -s app/build/outputs/apk/debug/app-debug.apk
-          cp app/build/outputs/apk/debug/app-debug.apk POYARA-CRM-0.19.2.apk
-          sha256sum POYARA-CRM-0.19.2.apk
+          version="$(sed -nE 's/^[[:space:]]*versionName = "([^"]+)"/\1/p' app/build.gradle.kts | head -1)"
+          test -n "$version"
+          echo "APP_VERSION=$version" >> "$GITHUB_ENV"
+          cp app/build/outputs/apk/debug/app-debug.apk "POYARA-CRM-$version.apk"
+          sha256sum "POYARA-CRM-$version.apk"
       - name: Publish public GitHub Release asset
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          tag='v0.19.2'
-          apk='POYARA-CRM-0.19.2.apk'
+          tag="v$APP_VERSION"
+          apk="POYARA-CRM-$APP_VERSION.apk"
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "$apk" --clobber
           else
             gh release create "$tag" "$apk" --target "$GITHUB_SHA" \
-              --title "POYARA CRM 0.19.2 (Android beta)" \
-              --notes "Direct Android APK for version 0.19.2. This is a debug-signed testing build. Back up your existing CRM data before installation. Do not uninstall your current app unless you have a verified backup. Installation over earlier builds may fail because their debug signing keys differ." \
+              --title "POYARA CRM $APP_VERSION (Android beta)" \
+              --notes "Direct Android APK for version $APP_VERSION. This is a debug-signed testing build. Back up your existing CRM data before installation. Do not uninstall your current app unless you have a verified backup. Installation over earlier builds may fail because their debug signing keys differ." \
               --prerelease
           fi

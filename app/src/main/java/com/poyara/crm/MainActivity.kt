@@ -121,6 +121,16 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
     var googleSyncBusy by remember { mutableStateOf(false) }
     val textAgentSettings = remember { VoiceServerSettings(context.applicationContext) }
     val directGeminiSettings = remember { GeminiLocalSettings(context.applicationContext) }
+    val cloudflareSettings = remember { CloudflareLocalSettings(context.applicationContext) }
+    var cloudflareAccountId by remember { mutableStateOf(cloudflareSettings.accountId) }
+    var cloudflareApiToken by remember { mutableStateOf("") }
+    val cloudflareStatusPrefs = remember {
+        context.getSharedPreferences("poyara_cloudflare_status", Context.MODE_PRIVATE)
+    }
+    var cloudflareVerified by remember {
+        mutableStateOf(cloudflareStatusPrefs.getBoolean("verified", false))
+    }
+    var cloudflareChecking by remember { mutableStateOf(false) }
     var directGeminiKey by remember { mutableStateOf("") }
     val agentPrefs = remember { context.getSharedPreferences("poyara_text_agent", Context.MODE_PRIVATE) }
     var agentPrivacyConsent by remember {
@@ -146,6 +156,7 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
     var showCallHistory by rememberSaveable { mutableStateOf(false) }
     var showAllGroups by rememberSaveable { mutableStateOf(false) }
     var showAllRoles by rememberSaveable { mutableStateOf(false) }
+    var roleMenuOpen by remember { mutableStateOf(false) }
     var showDeveloperSettings by rememberSaveable { mutableStateOf(false) }
     var customCategories by remember {
         mutableStateOf(context.getSharedPreferences("crm_categories", Context.MODE_PRIVATE)
@@ -377,7 +388,7 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
         pendingVoiceTranscript = listOf(pendingVoiceTranscript, value)
             .filter { it.isNotBlank() }.joinToString("\n")
         save(newNote = next)
-        agentMessages = listOf("گفتار به کادر اضافه شد. برای اجرای دستورها، «پردازش» را بزن.")
+        agentMessages = listOf("گفتار ثبت شد؛ آماده تحلیل خودکار.")
     }
 
     // Voice input is the user's source of truth. Keep the original transcript,
@@ -385,10 +396,10 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
     // values unless the speaker explicitly says a correction.
     fun addSpeechToCapture(transcript: String) {
         if (transcript.isBlank() && pendingVoiceFilePath.isBlank()) return
+        // The deterministic local interpreter always runs, including offline.
+        // Cloudflare enriches/corrects the record afterwards when available.
         val actions = PersianVoiceInterpreter.parse(
-            if (agentOptIn && (directGeminiSettings.configured || textAgentSettings.configured))
-                "" else transcript,
-            personName, companyName, phone)
+            transcript, personName, companyName, phone)
         val previousName = personName
         val previousCompany = companyName
         val previousPhone = phone
@@ -550,8 +561,7 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
             listOf("متن گفتار ذخیره شد؛ دستور روشن دیگری برای اعمال پیدا نشد.")
         }
         if (agentOptIn && agentPrivacyConsent &&
-            (directGeminiSettings.configured || textAgentSettings.configured) &&
-            !agentBusy) {
+            cloudflareSettings.configured && !agentBusy) {
             val sourceEntryId = entryId
             val sourceName = personName
             val sourcePhone = phone
@@ -564,16 +574,8 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                         val sameContact = db.all().filter { it.id == sourceEntryId }
                         val sameReminders = db.allReminders()
                             .filter { it.entryId == sourceEntryId }
-                        if (directGeminiSettings.configured) {
-                            GeminiDirectClient(context.applicationContext).analyze(
-                                transcript, audio, sameContact.firstOrNull(), sameReminders)
-                        } else {
-                            CrmTextAgentClient(context.applicationContext).let { client ->
-                                if (audio != null)
-                                    client.analyzeAudio(audio, transcript, sameContact, sameReminders)
-                                else client.analyze(transcript, sameContact)
-                            }
-                        }
+                        CloudflareDirectClient(context.applicationContext).analyze(
+                            transcript, audio, sameContact.firstOrNull(), sameReminders)
                     }
                 }
                 agentBusy = false
@@ -956,7 +958,8 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
     }
 
     fun beginGoogleDictation() {
-        if (isRecording || googleVoiceBusy) return
+        if (isRecording || googleVoiceBusy || agentBusy) return
+        pendingVoiceFilePath = ""
         recordingError = ""
         googleVoiceBusy = true
         googleVoiceStage = "در حال فعال‌کردن سرویس گفتار گوگل..."
@@ -972,7 +975,9 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                     recordingError = error ?: "سرویس گفتار گوشی متنی برنگرداند."
                 } else {
                     appendRawSpeech(text)
-                    Toast.makeText(context, "متن در کادر آماده پردازش است", Toast.LENGTH_SHORT).show()
+                    addSpeechToCapture(text)
+                    Toast.makeText(context, "گفتار ثبت شد و در حال پردازش است",
+                        Toast.LENGTH_SHORT).show()
                 }
             }
         )
@@ -1082,13 +1087,19 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                 onFinish = { text, error ->
                     voiceTranscribing = false
                     voiceFileReader = null
-                    if (!text.isNullOrBlank()) appendRawSpeech(text)
-                    else {
+                    if (!text.isNullOrBlank()) {
+                        appendRawSpeech(text)
+                        addSpeechToCapture(text)
+                    } else if (agentOptIn && cloudflareSettings.configured &&
+                        agentPrivacyConsent) {
+                        agentMessages = listOf("فایل صوتی دریافت شد؛ در حال تبدیل با Whisper و تحلیل هوشمند...")
+                        addSpeechToCapture("")
+                    } else {
                         // A recognizer rejecting prerecorded M4A is a status,
                         // NEVER a customer note or customer name.
                         agentMessages = listOf(
                             "فایل صوتی محفوظ است ولی تشخیص متن توسط گوشی انجام نشد. " +
-                            "اگر Gemini فعال است «پردازش» را بزن، یا از حالت گفتار زنده استفاده کن.",
+                            "حالت گفتار زنده را امتحان کن یا Workers AI را در تنظیمات فعال کن.",
                             error.orEmpty()
                         ).filter { it.isNotBlank() }
                     }
@@ -1445,7 +1456,10 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                             contentColor = Color.White,
                             shape = RoundedCornerShape(30.dp),
                             onClick = {
-                                if (isRecording) {
+                                if (agentBusy) {
+                                    Toast.makeText(context, "پردازش ویس قبلی هنوز ادامه دارد",
+                                        Toast.LENGTH_SHORT).show()
+                                } else if (isRecording) {
                                     if (googleVoiceMode) stopGoogleDictation() else stopRecording()
                                 } else if (!voiceTranscribing && !googleVoiceBusy &&
                                     context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
@@ -1568,111 +1582,120 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                 Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
                     Column(Modifier.fillMaxWidth().padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Agent رایگان · Gemini Flash-Lite", fontWeight = FontWeight.SemiBold)
-                        Text("برای استفاده شخصی، Gemini مستقیماً با کلید پروژه Google AI Studio فعال می‌شود؛ سرور واسط لازم نیست. حساب Google Contacts به‌تنهایی کلید Gemini ایجاد نمی‌کند.",
+                        Text("هوش مصنوعی رایگان · Cloudflare Workers AI",
+                            fontWeight = FontWeight.SemiBold)
+                        Text("مدل GLM-4.7-Flash؛ پردازش پس از هر ویس خودکار است. سهمیه رایگان روزانه Cloudflare محدود است.",
                             style = MaterialTheme.typography.bodySmall)
-                        Text("سهمیه رایگان، دسترسی منطقه‌ای و شرایط استفاده تابع قوانین گوگل است. Gemini API در ایران در فهرست مناطق رسمی پشتیبانی‌شده نیست؛ صرف ورود به Gmail این محدودیت را برطرف نمی‌کند.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error)
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(checked = agentPrivacyConsent,
-                                onCheckedChange = { accepted ->
-                                    agentPrivacyConsent = accepted
-                                    if (!accepted) agentOptIn = false
-                                    agentPrefs.edit()
-                                        .putBoolean("cloud_text_consent_v1", accepted)
-                                        .putBoolean("enabled", if (accepted) agentOptIn else false)
-                                        .apply()
-                                })
-                            Text("با ارسال متن گفتار مشتری برای تحلیل ابری موافقم",
+                            Checkbox(checked = agentPrivacyConsent, onCheckedChange = { accepted ->
+                                agentPrivacyConsent = accepted
+                                if (!accepted) agentOptIn = false
+                                agentPrefs.edit().putBoolean("cloud_text_consent_v1", accepted)
+                                    .putBoolean("enabled", if (accepted) agentOptIn else false).apply()
+                            })
+                            Text("اجازه ارسال متن و فایل صوتی برای پردازش را می‌دهم",
                                 style = MaterialTheme.typography.bodySmall)
                         }
-                        Text(if (directGeminiSettings.configured)
-                            "✓ Gemini رایگان مستقیماً روی گوشی آماده استفاده است"
-                        else if (textAgentSettings.configured)
-                            "سرور Gemini متصل است"
-                        else "یک‌بار کلید رایگان Gemini را از Google AI Studio وارد کن",
-                            style = MaterialTheme.typography.bodySmall)
-                        if (!directGeminiSettings.configured) {
-                            TextButton(onClick = {
-                                runCatching {
-                                    context.startActivity(Intent(Intent.ACTION_VIEW,
-                                        Uri.parse("https://aistudio.google.com/api-keys")))
-                                }.onFailure {
-                                    Toast.makeText(context, "صفحه Google AI Studio باز نشد",
-                                        Toast.LENGTH_SHORT).show()
-                                }
-                            }) { Text("دریافت کلید Gemini از Google AI Studio") }
-                            OutlinedTextField(
-                                value = directGeminiKey,
-                                onValueChange = { directGeminiKey = it },
-                                label = { Text("کلید Gemini (فقط یک‌بار)") },
-                                visualTransformation = PasswordVisualTransformation(),
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true
+                        if (cloudflareSettings.configured) {
+                            Text(
+                                if (cloudflareVerified) "✓ اتصال Workers AI قبلاً بررسی شده است"
+                                else "حساب ذخیره شده؛ اتصال هنوز تأیید نشده است",
+                                color = MaterialTheme.colorScheme.primary,
+                                style = MaterialTheme.typography.bodySmall
                             )
-                            OutlinedButton(onClick = {
+                            OutlinedButton(
+                                enabled = !cloudflareChecking,
+                                onClick = {
+                                    cloudflareChecking = true
+                                    coroutineScope.launch {
+                                        val check = withContext(Dispatchers.IO) {
+                                            runCatching {
+                                                CloudflareDirectClient(context.applicationContext)
+                                                    .testConnection()
+                                            }
+                                        }
+                                        cloudflareChecking = false
+                                        check.onSuccess {
+                                            cloudflareVerified = true
+                                            cloudflareStatusPrefs.edit()
+                                                .putBoolean("verified", true).apply()
+                                            agentOptIn = agentPrivacyConsent
+                                            agentPrefs.edit().putBoolean("enabled", agentOptIn).apply()
+                                            Toast.makeText(context,
+                                                "اتصال هوش مصنوعی برقرار است",
+                                                Toast.LENGTH_LONG).show()
+                                        }.onFailure { error ->
+                                            cloudflareVerified = false
+                                            cloudflareStatusPrefs.edit()
+                                                .putBoolean("verified", false).apply()
+                                            agentOptIn = false
+                                            agentPrefs.edit().putBoolean("enabled", false).apply()
+                                            Toast.makeText(context,
+                                                "اتصال برقرار نشد: " +
+                                                    error.localizedMessage.orEmpty().take(150),
+                                                Toast.LENGTH_LONG).show()
+                                        }
+                                    }
+                                }
+                            ) { Text(if (cloudflareChecking) "در حال بررسی..." else "آزمایش اتصال") }
+                        } else {
+                            OutlinedTextField(value = cloudflareAccountId,
+                                onValueChange = { cloudflareAccountId = it.trim() },
+                                label = { Text("Account ID حساب Cloudflare") },
+                                modifier = Modifier.fillMaxWidth(), singleLine = true)
+                            OutlinedTextField(value = cloudflareApiToken,
+                                onValueChange = { cloudflareApiToken = it },
+                                label = { Text("API Token محدود به Workers AI") },
+                                visualTransformation = PasswordVisualTransformation(),
+                                modifier = Modifier.fillMaxWidth(), singleLine = true)
+                            TextButton(onClick = {
+                                context.startActivity(Intent(Intent.ACTION_VIEW,
+                                    Uri.parse("https://dash.cloudflare.com/")))
+                            }) { Text("بازکردن Cloudflare Dashboard") }
+                            Button(onClick = {
                                 runCatching {
                                     require(agentPrivacyConsent) {
-                                        "ابتدا اجازه ارسال متن و صوت به مدل ابری را فعال کن."
+                                        "ابتدا اجازه ارسال گفتار به سرویس ابری را تأیید کن."
                                     }
-                                    directGeminiSettings.save(directGeminiKey)
-                                    directGeminiKey = ""
-                                    agentOptIn = true
-                                    agentPrefs.edit().putBoolean("enabled", true).apply()
+                                    cloudflareSettings.save(cloudflareAccountId, cloudflareApiToken)
+                                    cloudflareApiToken = ""
+                                    cloudflareVerified = false
+                                    cloudflareStatusPrefs.edit().putBoolean("verified", false).apply()
+                                    agentOptIn = false
+                                    agentPrefs.edit().putBoolean("enabled", false).apply()
                                 }.onSuccess {
-                                    Toast.makeText(context,
-                                        "Gemini روی این گوشی فعال شد", Toast.LENGTH_LONG).show()
-                                }.onFailure { error ->
-                                    Toast.makeText(context, error.localizedMessage,
+                                    Toast.makeText(context, "حساب ذخیره شد؛ حالا «آزمایش اتصال» را بزن",
+                                        Toast.LENGTH_LONG).show()
+                                }.onFailure {
+                                    Toast.makeText(context, it.localizedMessage.orEmpty(),
                                         Toast.LENGTH_LONG).show()
                                 }
-                            }) { Text("فعال‌سازی Gemini رایگان") }
+                            }, enabled = cloudflareAccountId.isNotBlank() &&
+                                    cloudflareApiToken.isNotBlank()) {
+                                Text("فعال‌سازی هوش مصنوعی")
+                            }
                         }
-                        TextButton(onClick = { showDeveloperSettings = !showDeveloperSettings }) {
-                            Text(if (showDeveloperSettings) "بستن تنظیمات توسعه‌دهنده"
-                                else "اتصال پیشرفته (مدیر سیستم)")
-                        }
-                        if (showDeveloperSettings) {
-                        OutlinedTextField(value = agentUrl, onValueChange = { agentUrl = it },
-                            label = { Text("آدرس HTTPS سرور Agent") },
-                            singleLine = true, modifier = Modifier.fillMaxWidth())
-                        OutlinedTextField(value = agentPairingToken,
-                            onValueChange = { agentPairingToken = it },
-                            label = { Text("کد اتصال اختصاصی سرور") },
-                            visualTransformation = PasswordVisualTransformation(),
-                            singleLine = true, modifier = Modifier.fillMaxWidth())
-                        Row(verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(onClick = {
-                                runCatching {
-                                    require(agentPrivacyConsent) {
-                                        "برای فعال‌سازی Agent، ابتدا اجازه ارسال متن به مدل ابری را تأیید کن."
-                                    }
-                                    textAgentSettings.save(agentUrl, agentPairingToken)
-                                    agentPairingToken = ""
-                                    agentOptIn = true
-                                    agentPrefs.edit().putBoolean("enabled", true).apply()
-                                }.onSuccess {
-                                    Toast.makeText(context, "تنظیمات Agent ذخیره شد", Toast.LENGTH_SHORT).show()
-                                }.onFailure { error ->
-                                    Toast.makeText(context, error.localizedMessage, Toast.LENGTH_LONG).show()
-                                }
-                            }) { Text("ذخیره اتصال") }
-                            Text("فعال", style = MaterialTheme.typography.bodySmall)
-                            Switch(checked = agentOptIn,
-                                enabled = (directGeminiSettings.configured ||
-                                    textAgentSettings.configured) && agentPrivacyConsent,
-                                onCheckedChange = { value ->
-                                    agentOptIn = value && agentPrivacyConsent
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("پردازش خودکار", modifier = Modifier.weight(1f))
+                            Switch(checked = agentOptIn && cloudflareSettings.configured && cloudflareVerified,
+                                enabled = cloudflareSettings.configured && cloudflareVerified && agentPrivacyConsent,
+                                onCheckedChange = { enabled ->
+                                    agentOptIn = enabled && agentPrivacyConsent
                                     agentPrefs.edit().putBoolean("enabled", agentOptIn).apply()
                                 })
                         }
+                        if (cloudflareSettings.configured) {
+                            TextButton(onClick = {
+                                cloudflareSettings.clear()
+                                cloudflareVerified = false
+                                cloudflareStatusPrefs.edit().putBoolean("verified", false).apply()
+                                agentOptIn = false
+                                agentPrefs.edit().putBoolean("enabled", false).apply()
+                            }) { Text("حذف اتصال Cloudflare") }
                         }
-                        if (agentBusy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                        agentMessages.forEach { message ->
-                            Text(message, style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.secondary)
+                        if (agentBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
+                        agentMessages.takeLast(2).forEach {
+                            Text(it, style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }
@@ -1838,12 +1861,35 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                 if (showExtraDetails) {
                     Row(Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(
-                            value = contactRole,
-                            onValueChange = { contactRole = it; save() },
-                            label = { Text("سمت شخص") }, singleLine = true,
-                            modifier = Modifier.weight(1f)
-                        )
+                        Box(Modifier.weight(1f)) {
+                            OutlinedTextField(
+                                value = contactRole,
+                                onValueChange = { contactRole = it; save() },
+                                label = { Text("سمت شخص") }, singleLine = true,
+                                trailingIcon = {
+                                    IconButton(onClick = { roleMenuOpen = true }) {
+                                        Text("⌄")
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            DropdownMenu(expanded = roleMenuOpen,
+                                onDismissRequest = { roleMenuOpen = false }) {
+                                (listOf("مدیرعامل", "مدیر مجموعه", "مدیر فروش",
+                                    "مالک", "مهندس معمار", "مهندس ساختمان",
+                                    "مسئول خرید", "کارشناس فروش", "کارمند") +
+                                    allEntries.map { it.role }.filter { it.isNotBlank() })
+                                    .distinct().take(20).forEach { role ->
+                                        DropdownMenuItem(
+                                            text = { Text(role) },
+                                            onClick = {
+                                                contactRole = role
+                                                save()
+                                                roleMenuOpen = false
+                                            })
+                                    }
+                            }
+                        }
                         OutlinedTextField(
                             value = contactCategory,
                             onValueChange = { contactCategory = it; save() },
@@ -1872,28 +1918,17 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                         label = { Text("اطلاعات این مشتری ناقص است؛ تکمیل سمت و گروه") }
                     )
                 }
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                    Button(
-                        onClick = {
-                            val transcript = pendingVoiceTranscript.ifBlank { note.trim() }
-                            if (transcript.isNotBlank() || pendingVoiceFilePath.isNotBlank()) {
-                                if (pendingVoiceFilePath.isNotBlank() &&
-                                    transcript.isBlank() &&
-                                    !directGeminiSettings.configured &&
-                                    !textAgentSettings.configured) {
-                                    agentMessages = listOf(
-                                        "صدا ذخیره شده است، اما برای پردازش فایل بدون متن " +
-                                        "باید Gemini را در تنظیمات فعال کنی."
-                                    )
-                                } else addSpeechToCapture(transcript)
-                            }
-                        },
-                        enabled = !agentBusy && !isRecording && !voiceTranscribing &&
-                            (note.isNotBlank() || pendingVoiceFilePath.isNotBlank()),
-                        modifier = Modifier.weight(1f)
-                    ) { Text(if (agentBusy) "در حال پردازش..." else "✦ پردازش با هوش مصنوعی") }
-                    OutlinedButton(onClick = { takePhoto() }) { Text("▣") }
+                if (agentBusy) {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                    Text("در حال تحلیل خودکار گفتار...",
+                        style = MaterialTheme.typography.bodySmall)
+                }
+                if (!agentBusy && cloudflareSettings.configured &&
+                    pendingVoiceTranscript.isNotBlank() &&
+                    agentMessages.any { "در دسترس نبود" in it || "خطا" in it }) {
+                    TextButton(onClick = {
+                        addSpeechToCapture(pendingVoiceTranscript)
+                    }) { Text("تلاش دوباره برای پردازش ویس") }
                 }
                 if (isRecording || voiceTranscribing || googleVoiceBusy) {
                     Text(if (isRecording) "● ضبط صدا فعال است؛ دایره قرمز را برای پایان بزن"
@@ -1904,9 +1939,8 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                     Text(recordingError, color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall)
                 }
-                if (!directGeminiSettings.configured && !textAgentSettings.configured &&
-                    agentMessages.isNotEmpty()) {
-                    Text("کلید رایگان Gemini هنوز در تنظیمات وارد نشده است؛ پردازش محلی فعال است.",
+                if (!cloudflareSettings.configured && agentMessages.isNotEmpty()) {
+                    Text("برای تحلیل ابری یک‌بار Workers AI را در تنظیمات وصل کن؛ پردازش محلی فعال است.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.secondary)
                 }
@@ -2150,26 +2184,6 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                 onClick = { openMap(0L) },
                 modifier = Modifier.fillMaxWidth()
             ) { Text("⌖ نقشه مشتریان و افراد اطراف من") }
-            // Backup data support is retained for migration, but controls are hidden from contacts.
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = {
-                    runCatching {
-                        accountPicker.launch(AccountManager.newChooseAccountIntent(
-                            null, null, arrayOf("com.google"), false,
-                            null, null, null, null))
-                    }.onFailure {
-                        Toast.makeText(context, "حساب گوگل را در تنظیمات گوشی اضافه کن",
-                            Toast.LENGTH_SHORT).show()
-                    }
-                }) { Text(if (googleAccount.isBlank()) "+ افزودن حساب گوگل"
-                    else "✓ حساب گوگل") }
-                if (googleAccount.isNotBlank()) {
-                    TextButton(onClick = { requestGoogleSync() }, enabled = !googleSyncBusy) {
-                        Text(if (googleSyncBusy) "در حال همگام‌سازی..." else "همگام‌سازی")
-                    }
-                }
-            }
             OutlinedTextField(
                 value = search,
                 onValueChange = { search = it },
@@ -2220,9 +2234,9 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
             if (showAllRoles) {
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                    (listOf("همه سمت‌ها") +
+                    (listOf("همه سمت‌ها", "مدیریت") +
                         allEntries.mapNotNull { it.role.takeIf(String::isNotBlank) })
-                        .distinct().sorted().forEach { role ->
+                        .distinct().forEach { role ->
                         FilterChip(selected = filterRole == role,
                             onClick = { filterRole = role; showAllRoles = false },
                             label = { Text(role) })
@@ -2234,128 +2248,36 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
             val filtered = allEntries.filter { entry ->
                 ContactReadiness.isComplete(entry.name, entry.phone) &&
                 (filterTag == "همه" || filterTag in entry.tags) &&
-                    (filterRole == "همه سمت‌ها" || filterRole == entry.role) &&
+                    (filterRole == "همه سمت‌ها" || filterRole == entry.role ||
+                        (filterRole == "مدیریت" &&
+                            ("مدیر" in entry.role || "مدیریت" in entry.role))) &&
                     (filterCategory == "همه گروه‌ها" || filterCategory == entry.category.ifBlank { "دسته‌بندی‌نشده" }) &&
                     (search.isBlank() || listOf(entry.name, entry.phone, entry.note, entry.company, entry.tags.joinToString())
                         .any { it.contains(search, ignoreCase = true) } ||
                         db.notes(entry.id).any { it.text.contains(search, ignoreCase = true) })
             }
             LazyColumn(
-                Modifier.weight(1f).padding(bottom = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                Modifier.weight(1f).padding(bottom = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(5.dp)
             ) {
-                filtered.sortedWith(compareBy<ContactEntry> { it.category }.thenBy { it.company })
-                    .groupBy { it.category.ifBlank { "دسته‌بندی‌نشده" } }
-                    .forEach { (category, categoryMembers) ->
-                    item(key = "category_${category}") {
-                        Text("${category} · ${categoryMembers.size} مخاطب",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(top = 12.dp))
-                    }
-                    categoryMembers.groupBy { it.groupId ?: it.id }.forEach { (groupRootId, members) ->
-                    val groupRoot = allEntries.firstOrNull { it.id == groupRootId } ?: members.first()
-                    val groupTitle = groupRoot.company.ifBlank { groupRoot.name }
-                        .ifBlank { groupRoot.note.lineSequence().firstOrNull().orEmpty().take(48) }
-                        .ifBlank { "پرونده بدون عنوان" }
-                    item(key = "group_${groupRootId}") {
-                        Text(
-                            "${groupTitle} · ${members.size} نفر",
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(top = 12.dp)
-                        )
-                    }
-                    items(members, key = { it.id }) { entry ->
-                        val related = allEntries.filter {
-                            (it.groupId ?: it.id) == groupRootId && it.id != entry.id
-                        }.sortedBy { it.name }
-                        Card(
-                            modifier = Modifier.fillMaxWidth().clickable { open(entry) },
-                            shape = RoundedCornerShape(14.dp)
+                items(filtered.sortedBy { it.name }, key = { it.id }) { entry ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth().clickable { open(entry) },
+                        shape = RoundedCornerShape(10.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color.White)
+                    ) {
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column(
-                                Modifier.padding(14.dp),
-                                verticalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                if (entry.name.isNotBlank()) Text(
-                                    entry.name,
-                                    fontWeight = FontWeight.Bold,
-                                    style = MaterialTheme.typography.titleMedium
-                                ) else if (entry.company.isBlank() && entry.note.isNotBlank()) {
-                                    Text(
-                                        entry.note.lineSequence().firstOrNull().orEmpty().take(64),
-                                        fontWeight = FontWeight.Bold,
-                                        style = MaterialTheme.typography.titleMedium
-                                    )
-                                }
-                                if (entry.company.isNotBlank()) Text(
-                                    entry.company,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    style = MaterialTheme.typography.labelMedium
-                                )
-                                if (entry.phone.isNotBlank()) Text(entry.phone, fontWeight = FontWeight.SemiBold)
-                                if (entry.extraPhones.isNotEmpty()) Text(entry.extraPhones.joinToString(" · "),
-                                    style = MaterialTheme.typography.bodySmall)
-                                if (entry.role.isNotBlank()) Text("سمت: ${entry.role}",
-                                    style = MaterialTheme.typography.labelMedium)
-                                if (entry.note.isNotBlank()) Text(
-                                    entry.note,
-                                    maxLines = 3,
-                                    style = MaterialTheme.typography.bodyMedium
-                                )
-                                if (entry.tags.isNotEmpty()) Text(
-                                    entry.tags.joinToString(" · "),
-                                    color = MaterialTheme.colorScheme.primary,
-                                    style = MaterialTheme.typography.labelMedium
-                                )
-                                if (related.isNotEmpty()) {
-                                    TextButton(onClick = {
-                                        expandedGroups = if (groupRootId in expandedGroups)
-                                            expandedGroups - groupRootId else expandedGroups + groupRootId
-                                    }) {
-                                        Text(
-                                            if (groupRootId in expandedGroups)
-                                                "بستن افراد مرتبط (${related.size}) ▲"
-                                            else "نمایش افراد مرتبط (${related.size}) ▼"
-                                        )
-                                    }
-                                    if (groupRootId in expandedGroups) {
-                                        related.forEach { person ->
-                                            TextButton(
-                                                onClick = { open(person) },
-                                                modifier = Modifier.fillMaxWidth()
-                                            ) {
-                                                Text(
-                                                    "${person.name.ifBlank { "بدون نام" }} · ${person.phone}",
-                                                    modifier = Modifier.fillMaxWidth()
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-                                HorizontalDivider(modifier = Modifier.padding(top = 7.dp, bottom = 3.dp))
-                                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    TextButton(
-                                        onClick = { callNumber(entry.phone) },
-                                        enabled = entry.phone.isNotBlank()
-                                    ) { Text("☎ تماس") }
-                                    TextButton(
-                                        onClick = {
-                                            open(entry)
-                                            goToMessages()
-                                        },
-                                        enabled = entry.phone.isNotBlank()
-                                    ) { Text("✉ پیامک") }
-                                    if (entry.latitude != null && entry.longitude != null) {
-                                        TextButton(onClick = {
-                                            openMap(entry.id, previewOnly = true)
-                                        }) { Text("📍 نقشه") }
-                                    }
-                                    TextButton(onClick = { open(entry) }) { Text("پرونده") }
-                                }
-                            }
+                            Text(entry.name, fontWeight = FontWeight.SemiBold,
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.weight(1f), maxLines = 1)
+                            Text(entry.phone,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.secondary,
+                                maxLines = 1)
                         }
-                    }
                     }
                 }
             }
