@@ -86,6 +86,7 @@ def trim_context(raw: str) -> list[dict]:
 class TextAgentRequest(BaseModel):
     transcript: str = Field(min_length=1, max_length=10000)
     contacts: list[dict] = Field(default_factory=list)
+    timezone: str = Field(default="Asia/Tehran", max_length=60)
 
 
 @app.post("/v1/text/analyze")
@@ -115,9 +116,13 @@ async def analyze_text(
         "If an exact participant is ambiguous, requires_confirmation=true. "
         "Never write data, send a message, or call anyone. Return proposal only."
     )
+    try:
+        target_zone = ZoneInfo(request.timezone)
+    except (KeyError, ValueError):
+        raise HTTPException(422, "Invalid timezone")
     payload = json.dumps({
-        "now_local": datetime.now(ZoneInfo(TIME_ZONE)).isoformat(),
-        "timezone": TIME_ZONE,
+        "now_local": datetime.now(target_zone).isoformat(),
+        "timezone": request.timezone,
         "transcript": transcript,
         "known_contacts": trim_context(json.dumps(request.contacts, ensure_ascii=False)),
     }, ensure_ascii=False)
