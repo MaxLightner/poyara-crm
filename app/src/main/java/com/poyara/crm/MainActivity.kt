@@ -1685,6 +1685,20 @@ private fun CrmHome(initialRecordId: Long) {
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.secondary)
                 }
+                TextButton(onClick = { showReminderDetails = !showReminderDetails }) {
+                    val number = db.allReminders().count { it.entryId == recordId }
+                    Text(if (showReminderDetails) "بستن قرارها ▲"
+                        else "▤ قرار و یادآوری ($number) ▼")
+                }
+                if (showReminderDetails) ReminderComposer(
+                    db = db,
+                    entryId = recordId,
+                    refreshKey = reminderRevision,
+                    ensureContact = { ensureRecord() },
+                    onSaved = { refresh() },
+                    onRequestNotification = { requestReminderNotificationPermission() }
+                )
+
                 if (lastVoiceActions.isNotEmpty()) {
                     Card(colors = CardDefaults.cardColors(
                         containerColor = Color(0xFFE3F3EF)
@@ -1821,19 +1835,6 @@ private fun CrmHome(initialRecordId: Long) {
                 }
                 }
 
-                TextButton(onClick = { showReminderDetails = !showReminderDetails }) {
-                    val number = db.allReminders().count { it.entryId == recordId }
-                    Text(if (showReminderDetails) "بستن قرارها ▲"
-                        else "▤ قرار و یادآوری ($number) ▼")
-                }
-                if (showReminderDetails) ReminderComposer(
-                    db = db,
-                    entryId = recordId,
-                    refreshKey = reminderRevision,
-                    ensureContact = { ensureRecord() },
-                    onSaved = { refresh() },
-                    onRequestNotification = { requestReminderNotificationPermission() }
-                )
             }
         } else if (page == "messages") {
             Column(
