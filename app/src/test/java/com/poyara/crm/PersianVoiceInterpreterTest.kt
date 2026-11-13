@@ -17,6 +17,29 @@ class PersianVoiceInterpreterTest {
             PersianVoiceInterpreter.mobileNumbers("شماره آقای احمدی ۰۹۱۵۸۱۵۱۲۰۴"))
     }
 
+    @Test fun recoversReversedPhoneOnlyWithExplicitPhoneCue() {
+        assertEquals(listOf("09158151204"),
+            PersianVoiceInterpreter.mobileNumbers("شماره تماس 40215185190"))
+        assertEquals(emptyList<String>(),
+            PersianVoiceInterpreter.mobileNumbers("فاکتور 40215185190"))
+    }
+
+    @Test fun extractsBusinessRoleAndIndustryCategory() {
+        val result = PersianVoiceInterpreter.parse(
+            "آقای حسینی مدیر مجموعه مبلمان لیپاریس است، شماره ۰۹۱۵۸۱۵۱۲۰۴")
+        assertEquals("حسینی", result.person)
+        assertTrue(result.role.orEmpty().contains("مدیر"))
+        assertEquals("مبل‌فروشی", result.category)
+        assertEquals("09158151204", result.phone)
+    }
+
+    @Test fun noDateOrAmPmDoesNotInventMeeting() {
+        val result = PersianVoiceInterpreter.parse(
+            "برای ساعت ۲:۳۰ برای آقای حسینی جلسه بذار", nowEpochMillis = now, timezone = zone)
+        assertNull(result.appointment?.dueAt)
+        assertNotNull(result.appointment?.warning)
+    }
+
     @Test fun recognizesSpokenDigitByDigitMobileNumber() {
         assertEquals(listOf("09158151204"),
             PersianVoiceInterpreter.mobileNumbers(
@@ -106,9 +129,9 @@ class PersianVoiceInterpreterTest {
             "احمدی", "مبلمان لیپاریس", "09150000000", emptyList(), emptyList())
         val updated = VoiceCaptureDocument.merge(earlier, "شماره درست 09158151204",
             "احمدی", "مبلمان لیپاریس", "09158151204", emptyList(), emptyList())
-        assertTrue(updated.contains("شماره: 09158151204"))
+        assertFalse(updated.contains("【خلاصه خودکار پویارا】\\nشماره:"))
         assertTrue(updated.contains("شماره 09150000000"))
         assertTrue(updated.contains("شماره درست 09158151204"))
-        assertEquals(1, "【خلاصه خودکار پویارا】".toRegex().findAll(updated).count())
+        assertEquals(0, "【خلاصه خودکار پویارا】".toRegex().findAll(updated).count())
     }
 }

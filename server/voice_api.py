@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
+from pydantic import BaseModel, Field
 from fastapi.responses import JSONResponse
 
 MAX_AUDIO_BYTES = 25 * 1024 * 1024
@@ -26,7 +27,7 @@ app = FastAPI(title="POYARA Voice Proposal API", version="0.1.0",
 
 CONTACT_PROPERTIES = {
     name: {"type": ["string", "null"]}
-    for name in ("name", "phone", "company", "role", "address", "note", "related_to")
+    for name in ("name", "phone", "company", "role", "category", "address", "note", "related_to")
 }
 REMINDER_PROPERTIES = {
     "person_name": {"type": ["string", "null"]},
@@ -80,6 +81,92 @@ def trim_context(raw: str) -> list[dict]:
                 for key in ("name", "company", "phone")
             })
     return items
+
+
+class TextAgentRequest(BaseModel):
+    transcript: str = Field(min_length=1, max_length=10000)
+    contacts: list[dict] = Field(default_factory=list)
+    timezone: str = Field(default="Asia/Tehran", max_length=60)
+
+
+@app.post("/v1/text/analyze")
+async def analyze_text(
+    request: TextAgentRequest,
+    authorization: str | None = Header(None),
+):
+    """Small, single-turn text extraction. No persistent agent or audio upload."""
+    require_pilot_auth(authorization)
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    if not api_key:
+        raise HTTPException(503, "Text agent model key is not configured")
+    transcript = request.transcript.strip()
+    if not transcript:
+        raise HTTPException(422, "Empty transcript")
+    instructions = (
+        "You are a Persian CRM command parser. Return only strictly grounded facts "
+        "in the provided JSON schema. Extract a person's name, every explicit "
+        "phone number, their organization, role (e.g. مدیر مجموعه), and industry "
+        "category (e.g. مبل فروشی or مهندسی ساختمان), and specific calls/meetings. "
+        "Never invent or infer numbers not in the transcript. Keep Persian contact "
+        "names as spoken. For relative dates interpret using today and timezone "
+        "provided. For 'ساعت 2:30' without day and AM/PM, ask in Persian what "
+        "day and whether morning or afternoon; do NOT schedule. A clear 24h "
+        "date and time may be returned without confirmation. Ensure reminders "
+        "are future and date_iso is Gregorian YYYY-MM-DD; time_local is HH:mm. "
+        "If an exact participant is ambiguous, requires_confirmation=true. "
+        "Never write data, send a message, or call anyone. Return proposal only."
+    )
+    try:
+        target_zone = ZoneInfo(request.timezone)
+    except (KeyError, ValueError):
+        raise HTTPException(422, "Invalid timezone")
+    payload = json.dumps({
+        "now_local": datetime.now(target_zone).isoformat(),
+        "timezone": request.timezone,
+        "transcript": transcript,
+        "known_contacts": trim_context(json.dumps(request.contacts, ensure_ascii=False)),
+    }, ensure_ascii=False)
+    async with httpx.AsyncClient(timeout=75.0) as client:
+        try:
+            response = await client.post(
+                f"{OPENAI_ENDPOINT}/responses",
+                headers={"Authorization": f"Bearer {api_key}",
+                         "Content-Type": "application/json"},
+                json={
+                    "model": os.getenv("POYARA_EXTRACTION_MODEL", "gpt-5-mini"),
+                    "instructions": instructions,
+                    "input": payload,
+                    "store": False,
+                    "text": {"format": {
+                        "type": "json_schema", "name": "crm_text_proposal",
+                        "strict": True, "schema": PROPOSAL_SCHEMA
+                    }}
+                }
+            )
+            response.raise_for_status()
+            result = response.json()
+            output = "".join(
+                part.get("text", "")
+                for item in result.get("output", [])
+                if item.get("type") == "message"
+                for part in item.get("content", [])
+                if part.get("type") == "output_text"
+            )
+            proposals = json.loads(output)
+        except (httpx.HTTPError, ValueError, KeyError) as exc:
+            raise HTTPException(502, "Text agent extraction unavailable") from exc
+    for contact in proposals["contacts"]:
+        if contact["phone"]:
+            contact["phone"] = normalize_numbers(contact["phone"]).strip()
+    for reminder in proposals["reminders"]:
+        reminder["remind_days_before"] = max(0, min(7, reminder["remind_days_before"]))
+        if reminder["date_iso"] and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", reminder["date_iso"]):
+            reminder["date_iso"] = None
+            reminder["requires_confirmation"] = True
+    return {"status": "needs_review", "contacts": proposals["contacts"][:10],
+            "reminders": proposals["reminders"][:10],
+            "questions": proposals["questions"][:10]}
+
 
 @app.get("/health")
 def health():

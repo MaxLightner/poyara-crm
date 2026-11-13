@@ -29,7 +29,9 @@ internal data class VoiceActions(
     val correctPhone: Boolean,
     val phoneWasMentioned: Boolean,
     val appointment: VoiceAppointmentAction?,
-    val alerts: List<String>
+    val alerts: List<String>,
+    val role: String? = null,
+    val category: String? = null
 )
 
 internal object PersianVoiceInterpreter {
@@ -76,7 +78,17 @@ internal object PersianVoiceInterpreter {
             .mapNotNull { canonicalPhone(it.value.filter { ch -> ch.isDigit() }) }
             .toList()
         val fromWords = if (phoneHint.containsMatchIn(normal)) spokenMobile(normal) else null
-        return (direct + listOfNotNull(fromWords)).distinct()
+        // Some Persian speech engines reverse a contiguous 11-digit phone sequence.
+        // Reverse only when the spoken context explicitly says phone, the forward
+        // sequence is invalid and its reverse is a valid Iranian mobile number.
+        val reversed = if (phoneHint.containsMatchIn(normal))
+            Regex("""(?<!\d)\d{11}(?!\d)""").findAll(normal)
+                .mapNotNull { match ->
+                    if (canonicalPhone(match.value) == null) canonicalPhone(match.value.reversed())
+                    else null
+                }.toList()
+        else emptyList()
+        return (direct + listOfNotNull(fromWords) + reversed).distinct()
     }
 
     private fun canonicalPhone(raw: String): String? {
@@ -184,9 +196,23 @@ internal object PersianVoiceInterpreter {
         if (correctPhone && currentPhone.isNotBlank() && chosenPhone == null) {
             alerts += "شماره قبلی حفظ شد، چون شماره جایگزین قابل تشخیص نبود."
         }
+        val role = when {
+            Regex("""مدیر(?:عامل)?\s*(?:مجموعه|فروشگاه|شرکت|فروش|تولید|پروژه)?|مدیریت""").containsMatchIn(text) ->
+                Regex("""مدیرعامل|مدیر\s+(?:فروش|تولید|پروژه)|مدیر\s+(?:مجموعه|فروشگاه|شرکت)|مدیریت""")
+                    .find(text)?.value ?: "مدیر"
+            Regex("""مهندس\s+(?:معمار|عمران|ساختمان)""").containsMatchIn(text) ->
+                Regex("""مهندس\s+(?:معمار|عمران|ساختمان)""").find(text)?.value
+            else -> null
+        }
+        val category = when {
+            Regex("""مبلمان|مبل فروشی|مبل‌فروشی|مبل فروش""").containsMatchIn(text) -> "مبل‌فروشی"
+            Regex("""معمار|مهندس ساختمان|ساختمان سازی|ساختمان‌سازی""").containsMatchIn(text) -> "مهندسی ساختمان"
+            Regex("""کابینت""").containsMatchIn(text) -> "کابینت‌سازی"
+            else -> null
+        }
         return VoiceActions(chosenPerson, chosenCompany, chosenPhone,
             correctPerson, correctCompany, correctPhone, phoneWasMentioned, appointment,
-            alerts.distinct())
+            alerts.distinct(), role, category)
     }
 
     private fun parseAppointment(text: String, correcting: Boolean, nowMs: Long,
