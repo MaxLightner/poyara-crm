@@ -14,9 +14,33 @@ internal class CrmTextAgentClient(context: Context) {
     private val settings = VoiceServerSettings(context)
     val configured: Boolean get() = settings.configured
 
+    private fun verifyFreeGeminiBackend() {
+        val request = (URL(settings.endpoint + "/health")
+            .openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 8_000
+            readTimeout = 8_000
+        }
+        try {
+            if (request.responseCode != 200) error("اتصال به سرور Agent برقرار نشد")
+            val status = request.inputStream.bufferedReader(Charsets.UTF_8)
+                .use { JSONObject(it.readText()) }
+            val provider = status.optString("text_provider")
+            val model = status.optString("text_model")
+            if (provider != "gemini" || !model.startsWith("gemini-")) {
+                error("سرور هنوز روی Gemini رایگان تنظیم نشده است؛ برای جلوگیری از هزینه، درخواست ارسال نشد")
+            }
+        } finally {
+            request.disconnect()
+        }
+    }
+
     fun analyze(transcript: String, contacts: List<ContactEntry>): JSONObject {
         require(configured) { "Agent هنوز متصل نشده است" }
         require(transcript.isNotBlank() && transcript.length <= 10000)
+        // Never accidentally call an old/paid backend merely because it was
+        // paired in a previous version of POYARA.
+        verifyFreeGeminiBackend()
         val payload = JSONObject()
             .put("transcript", transcript)
             .put("timezone", java.time.ZoneId.systemDefault().id)
