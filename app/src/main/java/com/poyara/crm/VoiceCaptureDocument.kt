@@ -27,9 +27,8 @@ internal object VoiceCaptureDocument {
             .filter { it.isNotEmpty() }.joinToString("\n\n")
 
         val summary = buildList {
-            if (company.isNotBlank()) add("مجموعه: " + company)
-            if (name.isNotBlank()) add("شخص: " + name)
-            if (phone.isNotBlank()) add("شماره: " + phone)
+            // Identity fields are shown in dedicated compact form fields above the notes.
+            // Preserve raw speech in history below, never repeat name/phone in this summary.
             reminders.take(4).forEach { add("برنامه: " + it) }
             alerts.distinct().take(4).forEach { add("نیازمند بررسی: " + it) }
         }
