@@ -227,7 +227,13 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
     var recordingError by remember { mutableStateOf("") }
     // Default to Google's built-in live microphone recognizer. Text is hidden
     // throughout dictation and only appears when Stop is tapped.
-    var googleVoiceMode by rememberSaveable { mutableStateOf(true) }
+    val voicePrefs = remember {
+        context.getSharedPreferences("poyara_voice_preferences", Context.MODE_PRIVATE)
+    }
+    // On-device providers often reject prerecorded M4A. Prefer live dictation.
+    var googleVoiceMode by remember {
+        mutableStateOf(voicePrefs.getBoolean("live_dictation_default", true))
+    }
     var googleVoiceBusy by remember { mutableStateOf(false) }
     var googleVoiceStage by remember { mutableStateOf("") }
     var googleSession by remember { mutableStateOf<GoogleDictationSession?>(null) }
@@ -1089,8 +1095,9 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { allowed ->
-        if (allowed) beginRecording()
-        else {
+        if (allowed) {
+            if (googleVoiceMode) beginGoogleDictation() else beginRecording()
+        } else {
             recordingError = "برای ضبط صدا، مجوز میکروفون را در تنظیمات گوشی فعال کن."
             Toast.makeText(context, recordingError, Toast.LENGTH_LONG).show()
         }
@@ -1430,11 +1437,13 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                             contentColor = Color.White,
                             shape = RoundedCornerShape(30.dp),
                             onClick = {
-                                if (isRecording) stopRecording()
-                                else if (!voiceTranscribing &&
+                                if (isRecording) {
+                                    if (googleVoiceMode) stopGoogleDictation() else stopRecording()
+                                } else if (!voiceTranscribing && !googleVoiceBusy &&
                                     context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
-                                        PackageManager.PERMISSION_GRANTED) beginRecording()
-                                else if (!voiceTranscribing) {
+                                        PackageManager.PERMISSION_GRANTED) {
+                                    if (googleVoiceMode) beginGoogleDictation() else beginRecording()
+                                } else if (!voiceTranscribing && !googleVoiceBusy) {
                                     permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                                 }
                             }
@@ -1504,6 +1513,27 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("تنظیمات پویارا", style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold)
+                Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("روش ضبط دکمه قرمز", fontWeight = FontWeight.SemiBold)
+                        Row(verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("تبدیل گفتار زنده به متن", modifier = Modifier.weight(1f))
+                            Switch(checked = googleVoiceMode, onCheckedChange = { checked ->
+                                googleVoiceMode = checked
+                                voicePrefs.edit().putBoolean("live_dictation_default", checked).apply()
+                            })
+                        }
+                        Text(
+                            if (googleVoiceMode)
+                                "با پایان صحبت، متن گفتار گوگل در کادر اصلی می‌آید. این حالت فایل خام صدا ذخیره نمی‌کند."
+                            else
+                                "صدای M4A محفوظ می‌ماند و Gemini می‌تواند صوت اصلی را تحلیل کند. تبدیل اولیه فایل در بعضی گوشی‌ها پشتیبانی نمی‌شود.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
                 Text("مجوزهای سیستم و اتصال‌ها اینجا مدیریت می‌شوند.",
                     style = MaterialTheme.typography.bodySmall)
                 Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
@@ -1810,7 +1840,15 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                         onClick = {
                             val transcript = pendingVoiceTranscript.ifBlank { note.trim() }
                             if (transcript.isNotBlank() || pendingVoiceFilePath.isNotBlank()) {
-                                addSpeechToCapture(transcript)
+                                if (pendingVoiceFilePath.isNotBlank() &&
+                                    transcript.isBlank() &&
+                                    !directGeminiSettings.configured &&
+                                    !textAgentSettings.configured) {
+                                    agentMessages = listOf(
+                                        "صدا ذخیره شده است، اما برای پردازش فایل بدون متن " +
+                                        "باید Gemini را در تنظیمات فعال کنی."
+                                    )
+                                } else addSpeechToCapture(transcript)
                             }
                         },
                         enabled = !agentBusy && !isRecording && !voiceTranscribing &&
