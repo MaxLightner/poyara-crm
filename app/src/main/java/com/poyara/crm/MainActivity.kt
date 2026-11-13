@@ -997,11 +997,22 @@ private fun CrmHome(initialRecordId: Long) {
         }
     }
 
-    val notificationPermission = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { allowed ->
-        if (allowed) requestCallerRole()
-        else Toast.makeText(context, "نمایش جزئیات تماس به اجازه اعلان نیاز دارد", Toast.LENGTH_LONG).show()
+    val callerPermissions = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { result ->
+        val notificationsAllowed = Build.VERSION.SDK_INT < 33 ||
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+                PackageManager.PERMISSION_GRANTED
+        val contactsAllowed =
+            context.checkSelfPermission(Manifest.permission.READ_CONTACTS) ==
+                PackageManager.PERMISSION_GRANTED
+        if (notificationsAllowed && contactsAllowed) {
+            requestCallerRole()
+        } else {
+            Toast.makeText(context,
+                "برای نمایش تماس مشتریانی که در دفترچه گوشی هم هستند، اجازه مخاطبین و اعلان لازم است.",
+                Toast.LENGTH_LONG).show()
+        }
     }
 
     val reminderNotificationPermission = rememberLauncherForActivityResult(
@@ -1023,10 +1034,15 @@ private fun CrmHome(initialRecordId: Long) {
     }
 
     fun activateCallerContext() {
-        if (Build.VERSION.SDK_INT >= 33 &&
-            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-        else requestCallerRole()
+        val permissions = buildList {
+            if (context.checkSelfPermission(Manifest.permission.READ_CONTACTS) !=
+                PackageManager.PERMISSION_GRANTED) add(Manifest.permission.READ_CONTACTS)
+            if (Build.VERSION.SDK_INT >= 33 &&
+                context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
+                    PackageManager.PERMISSION_GRANTED) add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        if (permissions.isEmpty()) requestCallerRole()
+        else callerPermissions.launch(permissions.toTypedArray())
     }
 
     val mapLauncher = rememberLauncherForActivityResult(
