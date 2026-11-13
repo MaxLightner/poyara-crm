@@ -389,10 +389,10 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
     // values unless the speaker explicitly says a correction.
     fun addSpeechToCapture(transcript: String) {
         if (transcript.isBlank() && pendingVoiceFilePath.isBlank()) return
+        // The deterministic local interpreter always runs, including offline.
+        // Cloudflare enriches/corrects the record afterwards when available.
         val actions = PersianVoiceInterpreter.parse(
-            if (agentOptIn && cloudflareSettings.configured)
-                "" else transcript,
-            personName, companyName, phone)
+            transcript, personName, companyName, phone)
         val previousName = personName
         val previousCompany = companyName
         val previousPhone = phone
