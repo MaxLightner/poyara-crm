@@ -2,6 +2,8 @@ package com.poyara.crm
 
 import android.Manifest
 import android.app.role.RoleManager
+import android.app.DatePickerDialog
+import android.app.TimePickerDialog
 import android.accounts.AccountManager
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -61,6 +63,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.Calendar
 import org.json.JSONObject
 import java.time.LocalDateTime
 import java.time.LocalDate
@@ -116,12 +119,46 @@ private fun CrmHome(initialRecordId: Long) {
     var googleAccount by remember { mutableStateOf(googlePrefs.getString("account", "").orEmpty()) }
     var googleSyncBusy by remember { mutableStateOf(false) }
     val textAgentSettings = remember { VoiceServerSettings(context.applicationContext) }
+    val directGeminiSettings = remember { GeminiLocalSettings(context.applicationContext) }
+    var directGeminiKey by remember { mutableStateOf("") }
     val agentPrefs = remember { context.getSharedPreferences("poyara_text_agent", Context.MODE_PRIVATE) }
-    var agentOptIn by remember { mutableStateOf(agentPrefs.getBoolean("enabled", false)) }
+    var agentPrivacyConsent by remember {
+        mutableStateOf(agentPrefs.getBoolean("cloud_text_consent_v1", false))
+    }
+    // Every installation, including upgrades from a paid-agent build, must
+    // explicitly consent before transcript text leaves the device.
+    var agentOptIn by remember {
+        mutableStateOf(agentPrefs.getBoolean("enabled", false) &&
+            agentPrefs.getBoolean("cloud_text_consent_v1", false))
+    }
     var agentUrl by rememberSaveable { mutableStateOf(textAgentSettings.endpoint) }
     var agentPairingToken by remember { mutableStateOf("") }
     var agentBusy by remember { mutableStateOf(false) }
+    var pendingVoiceTranscript by rememberSaveable { mutableStateOf("") }
+    var pendingVoiceFilePath by rememberSaveable { mutableStateOf("") }
+    var voiceTranscribing by remember { mutableStateOf(false) }
+    var voiceFileReader by remember { mutableStateOf<VoiceFileTranscriber?>(null) }
+    var showExtraDetails by rememberSaveable { mutableStateOf(false) }
+    var showMapDetails by rememberSaveable { mutableStateOf(false) }
+    var showReminderDetails by rememberSaveable { mutableStateOf(false) }
+    var showAttachments by rememberSaveable { mutableStateOf(false) }
+    var showCallHistory by rememberSaveable { mutableStateOf(false) }
+    var showAllGroups by rememberSaveable { mutableStateOf(false) }
+    var showAllRoles by rememberSaveable { mutableStateOf(false) }
+    var showDeveloperSettings by rememberSaveable { mutableStateOf(false) }
+    var customCategories by remember {
+        mutableStateOf(context.getSharedPreferences("crm_categories", Context.MODE_PRIVATE)
+            .getStringSet("names", emptySet()).orEmpty().toSet())
+    }
+    var newCategoryName by rememberSaveable { mutableStateOf("") }
+    var addCategoryDialog by remember { mutableStateOf(false) }
     var agentMessages by remember { mutableStateOf<List<String>>(emptyList()) }
+    var pendingDeleteReminderId by remember { mutableLongStateOf(0L) }
+    var pendingDeleteReminderTitle by remember { mutableStateOf("") }
+    var pendingMeetingTitle by remember { mutableStateOf("") }
+    var pendingMeetingTime by remember { mutableStateOf("") }
+    var pendingMeetingEntryId by remember { mutableLongStateOf(0L) }
+    var pendingMeetingLead by remember { mutableIntStateOf(0) }
     var page by rememberSaveable { mutableStateOf("capture") }
     val startupEntry = remember(initialRecordId) { db.all().find { it.id == initialRecordId } }
     val draftPrefs = remember { context.getSharedPreferences("capture_draft", Context.MODE_PRIVATE) }
@@ -194,7 +231,10 @@ private fun CrmHome(initialRecordId: Long) {
     var lastVoiceActions by remember { mutableStateOf<List<String>>(emptyList()) }
     var needVoiceNotificationPermission by remember { mutableStateOf(false) }
     DisposableEffect(Unit) {
-        onDispose { googleSession?.cancel() }
+        onDispose {
+            googleSession?.cancel()
+            voiceFileReader?.cancel()
+        }
     }
     LaunchedEffect(isRecording) {
         while (isRecording) {
@@ -316,12 +356,28 @@ private fun CrmHome(initialRecordId: Long) {
         return id
     }
 
+    fun appendRawSpeech(transcript: String) {
+        val value = transcript.trim()
+        if (value.isBlank()) return
+        // User first reviews raw speech; no CRM commands run until Process is tapped.
+        val next = listOf(note.trim(), value).filter { it.isNotBlank() }
+            .joinToString("\n\n")
+        note = next
+        pendingVoiceTranscript = listOf(pendingVoiceTranscript, value)
+            .filter { it.isNotBlank() }.joinToString("\n")
+        save(newNote = next)
+        agentMessages = listOf("گفتار به کادر اضافه شد. برای اجرای دستورها، «پردازش» را بزن.")
+    }
+
     // Voice input is the user's source of truth. Keep the original transcript,
     // apply only deterministic, high-confidence CRM commands, and preserve older
     // values unless the speaker explicitly says a correction.
     fun addSpeechToCapture(transcript: String) {
-        if (transcript.isBlank()) return
-        val actions = PersianVoiceInterpreter.parse(transcript, personName, companyName, phone)
+        if (transcript.isBlank() && pendingVoiceFilePath.isBlank()) return
+        val actions = PersianVoiceInterpreter.parse(
+            if (agentOptIn && (directGeminiSettings.configured || textAgentSettings.configured))
+                "" else transcript,
+            personName, companyName, phone)
         val previousName = personName
         val previousCompany = companyName
         val previousPhone = phone
@@ -482,15 +538,32 @@ private fun CrmHome(initialRecordId: Long) {
         lastVoiceActions = (feedback + warnings).distinct().ifEmpty {
             listOf("متن گفتار ذخیره شد؛ دستور روشن دیگری برای اعمال پیدا نشد.")
         }
-        if (agentOptIn && textAgentSettings.configured && !agentBusy) {
+        if (agentOptIn && agentPrivacyConsent &&
+            (directGeminiSettings.configured || textAgentSettings.configured) &&
+            !agentBusy) {
             val sourceEntryId = entryId
             val sourceName = personName
             val sourcePhone = phone
             agentBusy = true
             coroutineScope.launch {
                 val result = withContext(Dispatchers.IO) {
-                    runCatching { CrmTextAgentClient(context.applicationContext)
-                        .analyze(transcript, db.all()) }
+                    runCatching {
+                        val audio = pendingVoiceFilePath.takeIf { it.isNotBlank() }
+                            ?.let { File(it) }?.takeIf { it.isFile }
+                        val sameContact = db.all().filter { it.id == sourceEntryId }
+                        val sameReminders = db.allReminders()
+                            .filter { it.entryId == sourceEntryId }
+                        if (directGeminiSettings.configured) {
+                            GeminiDirectClient(context.applicationContext).analyze(
+                                transcript, audio, sameContact.firstOrNull(), sameReminders)
+                        } else {
+                            CrmTextAgentClient(context.applicationContext).let { client ->
+                                if (audio != null)
+                                    client.analyzeAudio(audio, transcript, sameContact, sameReminders)
+                                else client.analyze(transcript, sameContact)
+                            }
+                        }
+                    }
                 }
                 agentBusy = false
                 result.onSuccess { json ->
@@ -524,13 +597,23 @@ private fun CrmHome(initialRecordId: Long) {
                                 } else notes += "پیشنهاد مخاطب دیگر تشخیص داده شد؛ برای جلوگیری از اشتباه اعمال نشد."
                             }
                         }
+                        val customActions = json.optJSONArray("actions")
+                        if (customActions == null || customActions.length() == 0) {
                         val reminders = json.optJSONArray("reminders")
                         if (reminders != null) for (index in 0 until reminders.length()) {
                             val item = reminders.optJSONObject(index) ?: continue
                             val dateText = item.optString("date_iso").takeIf { it != "null" }.orEmpty()
                             val timeText = item.optString("time_local").takeIf { it != "null" }.orEmpty()
-                            if (item.optBoolean("requires_confirmation") || dateText.isBlank() || timeText.isBlank()) {
-                                notes += "زمان یک قرار نیازمند تأیید است؛ خودکار ثبت نشد."
+                            if (item.optBoolean("requires_confirmation") ||
+                                dateText.isBlank() || timeText.isBlank()) {
+                                pendingMeetingTitle = item.optString("title")
+                                    .takeIf { it.isNotBlank() }
+                                    ?: "جلسه با " + personName.ifBlank { companyName }
+                                pendingMeetingTime = timeText
+                                pendingMeetingEntryId = sourceEntryId
+                                pendingMeetingLead = item.optInt("remind_days_before", 0)
+                                    .coerceIn(0, 7)
+                                notes += "تاریخ یا ساعت قرار مبهم است؛ از پنجره تأیید انتخاب کن."
                                 continue
                             }
                             val due = runCatching {
@@ -555,6 +638,182 @@ private fun CrmHome(initialRecordId: Long) {
                                 notes += "قرار Agent در برنامه کاری ثبت شد: " + title
                             }
                         }
+                        }
+                        // Execute only an allow-listed CRM command set. Never accept
+                        // SQL, code, arbitrary URLs, or arbitrary shell commands.
+                        if (customActions != null) {
+                            fun parseDue(action: JSONObject, fallbackDate: Long? = null): Long? {
+                                val dateValue = action.optString("date_iso")
+                                    .takeUnless { it == "null" || it.isBlank() }
+                                val timeValue = action.optString("time_local")
+                                    .takeUnless { it == "null" || it.isBlank() }
+                                return runCatching {
+                                    val date = if (dateValue == null && fallbackDate != null)
+                                        java.time.Instant.ofEpochMilli(fallbackDate)
+                                            .atZone(ZoneId.systemDefault()).toLocalDate()
+                                    else LocalDate.parse(dateValue)
+                                    val clock = LocalTime.parse(timeValue)
+                                    date.atTime(clock).atZone(ZoneId.systemDefault())
+                                        .toInstant().toEpochMilli()
+                                }.getOrNull()?.takeIf { it > System.currentTimeMillis() }
+                            }
+                            for (i in 0 until customActions.length()) {
+                                val action = customActions.optJSONObject(i) ?: continue
+                                val type = action.optString("type")
+                                val value = action.optString("value")
+                                    .takeUnless { it == "null" }.orEmpty().trim()
+                                if (action.optBoolean("requires_confirmation")) {
+                                    if (type == "create_reminder") {
+                                        pendingMeetingTitle = action.optString("title")
+                                            .takeUnless { it.isBlank() || it == "null" }
+                                            ?: "جلسه با " + personName.ifBlank { companyName }
+                                        pendingMeetingTime = action.optString("time_local")
+                                            .takeUnless { it == "null" }.orEmpty()
+                                        pendingMeetingEntryId = sourceEntryId
+                                        pendingMeetingLead = action.optInt("remind_days_before", 0)
+                                            .coerceIn(0, 7)
+                                        notes += "برای ثبت قرار، روز و ساعت را در پنجره تأیید انتخاب کن."
+                                    } else notes += "برای دستور «$type» اطلاعات بیشتری لازم است."
+                                    continue
+                                }
+                                when (type) {
+                                    "correct_name" -> {
+                                        if (value.length in 2..100) {
+                                            personName = value
+                                            save()
+                                            notes += "نام مخاطب اصلاح شد: $value"
+                                        }
+                                    }
+                                    "correct_phone" -> {
+                                        val number = normalizePhone(value)
+                                        if (number.matches(Regex("""0\d{8,12}"""))) {
+                                            phone = number
+                                            extraPhones = extraPhones.filterNot {
+                                                normalizePhone(it) == number
+                                            }
+                                            save()
+                                            notes += "شماره اصلی با مقدار درست جایگزین شد."
+                                        } else notes += "شماره اصلاحی معتبر نبود."
+                                    }
+                                    "remove_phone" -> {
+                                        val number = normalizePhone(value)
+                                        if (number.isNotBlank()) {
+                                            if (normalizePhone(phone) == number) {
+                                                phone = extraPhones.firstOrNull().orEmpty()
+                                                extraPhones = extraPhones.drop(1)
+                                            } else extraPhones = extraPhones.filterNot {
+                                                normalizePhone(it) == number
+                                            }
+                                            save()
+                                            notes += "شماره درخواست‌شده حذف شد."
+                                        }
+                                    }
+                                    "set_company" -> if (value.isNotBlank()) {
+                                        companyName = value.take(150)
+                                        save()
+                                        notes += "نام مجموعه اصلاح شد: $companyName"
+                                    }
+                                    "add_phone" -> {
+                                        val number = normalizePhone(value)
+                                        if (number.matches(Regex("""0\d{8,12}"""))) {
+                                            if (phone.isBlank()) phone = number
+                                            else if (number != normalizePhone(phone) &&
+                                                extraPhones.none { normalizePhone(it) == number })
+                                                extraPhones = extraPhones + number
+                                            save()
+                                            notes += "شماره در مخاطب ثبت شد: $number"
+                                        } else notes += "شماره پیشنهادی نامعتبر است؛ ثبت نشد."
+                                    }
+                                    "set_role" -> if (value.isNotBlank()) {
+                                        contactRole = value.take(100)
+                                        if ("مدیر" in value || "مدیریت" in value)
+                                            chosenTags = chosenTags + "مدیریت"
+                                        save()
+                                        notes += "سمت ثبت شد: $value"
+                                    }
+                                    "set_category" -> if (value.isNotBlank()) {
+                                        contactCategory = value.take(100)
+                                        save()
+                                        notes += "گروه ثبت شد: $value"
+                                    }
+                                    "append_note" -> if (value.isNotBlank()) {
+                                        note = listOf(note, value.take(500))
+                                            .filter { it.isNotBlank() }.joinToString("\n")
+                                        save(newNote = note)
+                                        notes += "یادداشت تکمیلی اضافه شد."
+                                    }
+                                    "create_reminder" -> {
+                                        val due = parseDue(action)
+                                        if (due == null) {
+                                            notes += "روز یا ساعت قرار روشن نیست؛ ثبت نشد."
+                                        } else {
+                                            val title = action.optString("title")
+                                                .takeIf { it.isNotBlank() && it != "null" }
+                                                ?: "جلسه با " + personName.ifBlank { companyName }
+                                            val duplicate = db.allReminders(includeDone = true).any {
+                                                it.entryId == sourceEntryId && it.dueAt == due &&
+                                                    it.title == title
+                                            }
+                                            if (!duplicate) {
+                                                val lead = action.optInt("remind_days_before", 0)
+                                                    .coerceIn(0, 7)
+                                                val id = db.addReminder(sourceEntryId,
+                                                    title.take(160), due, lead)
+                                                db.allReminders().firstOrNull { it.id == id }
+                                                    ?.let { ReminderScheduler.schedule(context, it) }
+                                                needVoiceNotificationPermission = true
+                                            }
+                                            notes += if (duplicate) "این قرار قبلاً ثبت شده است."
+                                                else "قرار در برنامه کاری ثبت شد: $title"
+                                        }
+                                    }
+                                    "update_reminder" -> {
+                                        val id = action.optLong("target_reminder_id", -1L)
+                                        val old = db.allReminders().firstOrNull {
+                                            it.id == id && it.entryId == sourceEntryId }
+                                        if (old == null) {
+                                            notes += "قرار موردنظر برای اصلاح پیدا نشد."
+                                        } else {
+                                            val due = parseDue(action, old.dueAt)
+                                            val title = action.optString("title")
+                                                .takeIf { it.isNotBlank() && it != "null" }
+                                                ?: old.title
+                                            if (due != null && db.updateReminder(old.id,
+                                                    sourceEntryId, title.take(160), due,
+                                                    action.optInt("remind_days_before",
+                                                        old.remindDaysBefore).coerceIn(0,7))) {
+                                                ReminderScheduler.cancel(context, old.id)
+                                                db.allReminders().firstOrNull { it.id == old.id }
+                                                    ?.let { ReminderScheduler.schedule(context, it) }
+                                                notes += "قرار قبلی اصلاح شد: $title"
+                                            } else notes += "زمان جدید قرار معتبر نیست؛ تغییر نکرد."
+                                        }
+                                    }
+                                    "delete_reminder" -> {
+                                        val id = action.optLong("target_reminder_id", -1L)
+                                        val old = db.allReminders().firstOrNull {
+                                            it.id == id && it.entryId == sourceEntryId }
+                                        if (old != null) {
+                                            pendingDeleteReminderId = old.id
+                                            pendingDeleteReminderTitle = old.title
+                                            notes += "حذف «${old.title}» منتظر تأیید شماست."
+                                        } else notes += "قرار موردنظر برای حذف پیدا نشد."
+                                    }
+                                }
+                            }
+                        }
+                        val cleaned = json.optString("corrected_text").trim()
+                        if (cleaned.isNotBlank() && cleaned != transcript &&
+                            cleaned.length <= 10000) {
+                            if (transcript.isNotBlank() && note.contains(transcript)) {
+                                note = note.replace(transcript, cleaned)
+                            } else note = listOf(note, cleaned).filter { it.isNotBlank() }
+                                .joinToString("\n\n")
+                            save(newNote = note)
+                            notes += "متن گفتار و غلط‌های نگارشی اصلاح شد."
+                        }
+                        pendingVoiceTranscript = ""
+                        pendingVoiceFilePath = ""
                         val questions = json.optJSONArray("questions")
                         if (questions != null) for (i in 0 until questions.length()) {
                             questions.optString(i).takeIf { it.isNotBlank() }
@@ -593,6 +852,15 @@ private fun CrmHome(initialRecordId: Long) {
     }
 
     fun open(entry: ContactEntry) {
+        voiceFileReader?.cancel()
+        voiceFileReader = null
+        voiceTranscribing = false
+        pendingVoiceTranscript = ""
+        pendingVoiceFilePath = ""
+        pendingMeetingEntryId = 0L
+        showExtraDetails = false
+        showReminderDetails = false
+        showMapDetails = false
         recordId = entry.id
         personName = entry.name
         companyName = entry.company
@@ -617,6 +885,16 @@ private fun CrmHome(initialRecordId: Long) {
     }
 
     fun newEntry() {
+        voiceFileReader?.cancel()
+        voiceFileReader = null
+        voiceTranscribing = false
+        pendingVoiceTranscript = ""
+        pendingVoiceFilePath = ""
+        pendingMeetingEntryId = 0L
+        agentMessages = emptyList()
+        showExtraDetails = false
+        showReminderDetails = false
+        showMapDetails = false
         clearDraft()
         recordId = 0L
         personName = ""
@@ -672,8 +950,8 @@ private fun CrmHome(initialRecordId: Long) {
                 if (text.isNullOrBlank()) {
                     recordingError = error ?: "سرویس گفتار گوشی متنی برنگرداند."
                 } else {
-                    addSpeechToCapture(text)
-                    Toast.makeText(context, "متن گفتار به کادر بالا اضافه شد", Toast.LENGTH_SHORT).show()
+                    appendRawSpeech(text)
+                    Toast.makeText(context, "متن در کادر آماده پردازش است", Toast.LENGTH_SHORT).show()
                 }
             }
         )
@@ -773,9 +1051,23 @@ private fun CrmHome(initialRecordId: Long) {
             } else {
                 addDraftAttachment("audio", target)
             }
-            // No network access: the original M4A stays in the app's private storage.
-            // Child panel starts file transcription automatically after the recording stops.
-            pendingAutoTranscriptions = pendingAutoTranscriptions + target.absolutePath
+            // Original audio stays available for AI analysis of background noise.
+            pendingVoiceFilePath = target.absolutePath
+            voiceFileReader?.cancel()
+            voiceTranscribing = true
+            val reader = VoiceFileTranscriber(context.applicationContext)
+            voiceFileReader = reader
+            reader.transcribe(target, onStage = { googleVoiceStage = it },
+                onFinish = { text, error ->
+                    voiceTranscribing = false
+                    voiceFileReader = null
+                    if (!text.isNullOrBlank()) appendRawSpeech(text)
+                    else {
+                        val placeholder = "صدای ضبط‌شده آماده پردازش است؛ متن اولیه تشخیص داده نشد."
+                        if (note.isBlank()) { note = placeholder; save(newNote = placeholder) }
+                        agentMessages = listOf(error ?: placeholder)
+                    }
+                })
         } catch (error: Exception) {
             recordingError = "صدا ذخیره شد، اما اتصال به پرونده کامل نشد: " +
                 (error.localizedMessage ?: "خطا")
@@ -786,9 +1078,7 @@ private fun CrmHome(initialRecordId: Long) {
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { allowed ->
-        if (allowed) {
-            if (googleVoiceMode) beginGoogleDictation() else beginRecording()
-        }
+        if (allowed) beginRecording()
         else {
             recordingError = "برای ضبط صدا، مجوز میکروفون را در تنظیمات گوشی فعال کن."
             Toast.makeText(context, recordingError, Toast.LENGTH_LONG).show()
@@ -1090,37 +1380,58 @@ private fun CrmHome(initialRecordId: Long) {
     Scaffold(
         containerColor = Color(0xFFF4F7F8),
         floatingActionButton = {
-            val hasAnyInformation = personName.isNotBlank() ||
-                companyName.isNotBlank() || phone.isNotBlank() || note.isNotBlank() ||
-                draftAttachments.isNotEmpty() || draftLatitude != null || recordId > 0L
-            if (page == "capture" && hasAnyInformation) {
-                val canComplete = !isRecording && pendingAutoTranscriptions.isEmpty() &&
-                    (note.isNotBlank() || (personName.isNotBlank() && phone.isNotBlank()))
-                FloatingActionButton(
-                    modifier = Modifier.size(64.dp),
-                    containerColor = if (canComplete) Color(0xFF087866) else Color(0xFFD9E5E3),
-                    contentColor = if (canComplete) Color.White else Color(0xFF526C69),
-                    shape = RoundedCornerShape(18.dp),
-                    onClick = {
-                        if (!canComplete) {
-                            Toast.makeText(
-                                context, if (isRecording || pendingAutoTranscriptions.isNotEmpty())
-                                    "ضبط یا تبدیل صوت هنوز کامل نشده است"
-                                else "برای ثبت، چیزی در کادر اصلی بنویس یا ویس را تبدیل کن",
-                                Toast.LENGTH_SHORT
-                            ).show()
-                        } else if (save() > 0L) {
-                            Toast.makeText(context, "ثبت شد؛ آماده پرونده بعدی", Toast.LENGTH_SHORT).show()
-                            newEntry()
+            if (page == "capture") {
+                val hasInformation = personName.isNotBlank() ||
+                    companyName.isNotBlank() || phone.isNotBlank() || note.isNotBlank() ||
+                    draftAttachments.isNotEmpty() || draftLatitude != null
+                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 6.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.Bottom
+                    ) {
+                        if (hasInformation) {
+                            FloatingActionButton(
+                                modifier = Modifier.size(54.dp),
+                                containerColor = Color(0xFF087866),
+                                contentColor = Color.White,
+                                shape = RoundedCornerShape(16.dp),
+                                onClick = {
+                                    if (isRecording || voiceTranscribing || agentBusy) {
+                                        Toast.makeText(context,
+                                            "ابتدا ضبط یا پردازش را تمام کن",
+                                            Toast.LENGTH_SHORT).show()
+                                    } else if (save() > 0L) {
+                                        Toast.makeText(context,
+                                            "پرونده ذخیره شد", Toast.LENGTH_SHORT).show()
+                                        newEntry()
+                                    }
+                                }
+                            ) { Text("✓", style = MaterialTheme.typography.headlineMedium) }
+                        } else Spacer(Modifier.size(54.dp))
+                        FloatingActionButton(
+                            modifier = Modifier.size(56.dp),
+                            containerColor = Color(0xFFCC3039),
+                            contentColor = Color.White,
+                            shape = RoundedCornerShape(30.dp),
+                            onClick = {
+                                if (isRecording) stopRecording()
+                                else if (!voiceTranscribing &&
+                                    context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
+                                        PackageManager.PERMISSION_GRANTED) beginRecording()
+                                else if (!voiceTranscribing) {
+                                    permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                }
+                            }
+                        ) {
+                            Text(if (isRecording) "■" else "●",
+                                style = MaterialTheme.typography.headlineMedium)
                         }
                     }
-                ) {
-                    Text("✓", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
                 }
             }
         },
-        // Material 3 resolves End to the physical left in the app's RTL layout.
-        floatingActionButtonPosition = FabPosition.End,
+        floatingActionButtonPosition = FabPosition.Center,
         bottomBar = {
             NavigationBar(containerColor = Color.White, tonalElevation = 8.dp) {
                 listOf(
@@ -1150,7 +1461,11 @@ private fun CrmHome(initialRecordId: Long) {
         Modifier.fillMaxSize().padding(insets).padding(horizontal = 16.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Box(Modifier.fillMaxWidth().height(54.dp)) {
+        Box(Modifier.fillMaxWidth().height(48.dp)) {
+            TextButton(onClick = { page = if (page == "settings") "capture" else "settings" },
+                modifier = Modifier.align(Alignment.CenterStart)) {
+                Text(if (page == "settings") "بازگشت" else "⚙ تنظیمات")
+            }
             if (page == "capture") {
                 Box(
                     Modifier.align(Alignment.CenterEnd)
@@ -1166,10 +1481,186 @@ private fun CrmHome(initialRecordId: Long) {
             }
         }
 
-        if (page == "capture") {
+        if (page == "settings") {
+            Column(Modifier.weight(1f).verticalScroll(rememberScrollState())
+                .padding(bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("تنظیمات پویارا", style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold)
+                Text("مجوزهای سیستم و اتصال‌ها اینجا مدیریت می‌شوند.",
+                    style = MaterialTheme.typography.bodySmall)
+                Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Agent رایگان · Gemini Flash-Lite", fontWeight = FontWeight.SemiBold)
+                        Text("مدل رایگان گوگل از طریق سرور خصوصی شما فراخوانی می‌شود. فقط متن همان ویس و نام/مجموعه همین پرونده ارسال می‌شود؛ سایر مخاطبین گوشی فرستاده نمی‌شوند. بدون اتصال، موتور محلی همچنان کار می‌کند.",
+                            style = MaterialTheme.typography.bodySmall)
+                        Text("توجه: در سهمیه رایگان Gemini، گوگل ممکن است متن ارسالی را برای بهبود محصولاتش استفاده کند؛ اطلاعات مشتری را فقط با رضایت و آگاهی ارسال کن. سهمیه رایگان محدود است؛ خود سرور ممکن است هزینه داشته باشد.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = agentPrivacyConsent,
+                                onCheckedChange = { accepted ->
+                                    agentPrivacyConsent = accepted
+                                    if (!accepted) agentOptIn = false
+                                    agentPrefs.edit()
+                                        .putBoolean("cloud_text_consent_v1", accepted)
+                                        .putBoolean("enabled", if (accepted) agentOptIn else false)
+                                        .apply()
+                                })
+                            Text("با ارسال متن گفتار مشتری برای تحلیل ابری موافقم",
+                                style = MaterialTheme.typography.bodySmall)
+                        }
+                        Text(if (directGeminiSettings.configured)
+                            "✓ Gemini رایگان مستقیماً روی گوشی آماده استفاده است"
+                        else if (textAgentSettings.configured)
+                            "سرور Gemini متصل است"
+                        else "یک‌بار کلید رایگان Gemini را از Google AI Studio وارد کن",
+                            style = MaterialTheme.typography.bodySmall)
+                        if (!directGeminiSettings.configured) {
+                            OutlinedTextField(
+                                value = directGeminiKey,
+                                onValueChange = { directGeminiKey = it },
+                                label = { Text("کلید Gemini (فقط یک‌بار)") },
+                                visualTransformation = PasswordVisualTransformation(),
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true
+                            )
+                            OutlinedButton(onClick = {
+                                runCatching {
+                                    require(agentPrivacyConsent) {
+                                        "ابتدا اجازه ارسال متن و صوت به مدل ابری را فعال کن."
+                                    }
+                                    directGeminiSettings.save(directGeminiKey)
+                                    directGeminiKey = ""
+                                    agentOptIn = true
+                                    agentPrefs.edit().putBoolean("enabled", true).apply()
+                                }.onSuccess {
+                                    Toast.makeText(context,
+                                        "Gemini روی این گوشی فعال شد", Toast.LENGTH_LONG).show()
+                                }.onFailure { error ->
+                                    Toast.makeText(context, error.localizedMessage,
+                                        Toast.LENGTH_LONG).show()
+                                }
+                            }) { Text("فعال‌سازی Gemini رایگان") }
+                        }
+                        TextButton(onClick = { showDeveloperSettings = !showDeveloperSettings }) {
+                            Text(if (showDeveloperSettings) "بستن تنظیمات توسعه‌دهنده"
+                                else "اتصال پیشرفته (مدیر سیستم)")
+                        }
+                        if (showDeveloperSettings) {
+                        OutlinedTextField(value = agentUrl, onValueChange = { agentUrl = it },
+                            label = { Text("آدرس HTTPS سرور Agent") },
+                            singleLine = true, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(value = agentPairingToken,
+                            onValueChange = { agentPairingToken = it },
+                            label = { Text("کد اتصال اختصاصی سرور") },
+                            visualTransformation = PasswordVisualTransformation(),
+                            singleLine = true, modifier = Modifier.fillMaxWidth())
+                        Row(verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = {
+                                runCatching {
+                                    require(agentPrivacyConsent) {
+                                        "برای فعال‌سازی Agent، ابتدا اجازه ارسال متن به مدل ابری را تأیید کن."
+                                    }
+                                    textAgentSettings.save(agentUrl, agentPairingToken)
+                                    agentPairingToken = ""
+                                    agentOptIn = true
+                                    agentPrefs.edit().putBoolean("enabled", true).apply()
+                                }.onSuccess {
+                                    Toast.makeText(context, "تنظیمات Agent ذخیره شد", Toast.LENGTH_SHORT).show()
+                                }.onFailure { error ->
+                                    Toast.makeText(context, error.localizedMessage, Toast.LENGTH_LONG).show()
+                                }
+                            }) { Text("ذخیره اتصال") }
+                            Text("فعال", style = MaterialTheme.typography.bodySmall)
+                            Switch(checked = agentOptIn,
+                                enabled = (directGeminiSettings.configured ||
+                                    textAgentSettings.configured) && agentPrivacyConsent,
+                                onCheckedChange = { value ->
+                                    agentOptIn = value && agentPrivacyConsent
+                                    agentPrefs.edit().putBoolean("enabled", agentOptIn).apply()
+                                })
+                        }
+                        }
+                        if (agentBusy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        agentMessages.forEach { message ->
+                            Text(message, style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.secondary)
+                        }
+                    }
+                }
+
+                Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFE1F3EF))) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("شناسایی تماس‌های کاری", fontWeight = FontWeight.Bold)
+                        Text(
+                            if (callerEnabled) "فعال است؛ فقط تماس شماره‌های ثبت‌شده در CRM اعلان شناسایی دریافت می‌کنند و با لمس آن کارت تماس پویارا باز می‌شود."
+                            else "برای نمایش نام، عکس، سمت و مجموعه مشتریان ثبت‌شده روی تماس عادی گوشی، شناسایی تماس کاری را فعال کن.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        if (!callerEnabled) {
+                            TextButton(onClick = { activateCallerContext() }) {
+                                Text("فعال‌سازی شناسایی تماس")
+                            }
+                        }
+                        HorizontalDivider()
+                        Text("شماره‌گیر اصلی گوشی تغییر نمی‌کند؛ تماس‌های خارج از پویارا هیچ اعلانی از CRM دریافت نمی‌کنند.",
+                            style = MaterialTheme.typography.bodySmall)
+                        Text("کارت تماس کاری جایگزین دکمه پاسخ و رد تماس اندروید نیست؛ این کنترل‌ها در صفحه تماس معمولی گوشی باقی می‌مانند.",
+                            style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+
+
+                Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("حساب گوگل", fontWeight = FontWeight.Bold)
+                        Text(googleAccount.ifBlank { "حساب انتخاب نشده است" },
+                            style = MaterialTheme.typography.bodySmall)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = {
+                                runCatching {
+                                    accountPicker.launch(AccountManager.newChooseAccountIntent(
+                                        null, null, arrayOf("com.google"), false,
+                                        null, null, null, null))
+                                }
+                            }) { Text("افزودن حساب گوگل") }
+                            if (googleAccount.isNotBlank())
+                                TextButton(onClick = { requestGoogleSync() },
+                                    enabled = !googleSyncBusy) {
+                                    Text(if (googleSyncBusy) "در حال همگام‌سازی" else "همگام‌سازی")
+                                }
+                        }
+                    }
+                }
+                if (Build.VERSION.SDK_INT >= 33) {
+                    OutlinedButton(onClick = {
+                        val manager = context.getSystemService(StatusBarManager::class.java)
+                        manager?.requestAddTileService(
+                            ComponentName(context, QuickCaptureTileService::class.java),
+                            "ثبت مخاطب",
+                            Icon.createWithResource(context, android.R.drawable.ic_menu_add),
+                            context.mainExecutor
+                        ) { }
+                    }) {
+                        Text("افزودن میان‌بر به پنل بالای گوشی")
+                    }
+                } else {
+                    Text(
+                        "میان‌بر ثبت مخاطب را از ویرایش پنل تنظیمات سریع گوشی اضافه کن.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+
+            }
+        } else if (page == "capture") {
             Column(
-                Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                Modifier.weight(1f).verticalScroll(rememberScrollState())
+                    .padding(bottom = 104.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 if (allEntries.isEmpty() && recordId == 0L) {
                     Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFF1F5F5))) {
@@ -1238,44 +1729,108 @@ private fun CrmHome(initialRecordId: Long) {
                     value = note,
                     onValueChange = {
                         note = it
+                        if (pendingVoiceTranscript.isNotBlank())
+                            pendingVoiceTranscript = it.takeLast(10000)
                         save(newNote = it)
                     },
                     label = { Text("چه چیزی درباره مجموعه می‌دونی؟") },
                     placeholder = {
                         Text("هرچه می‌دانی بنویس یا با ضبط صوت بگو؛ نام‌ها، شماره‌ها، آدرس، جلسه‌ها و پیگیری‌ها...")
                     },
-                    minLines = 11,
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 260.dp)
+                    minLines = 3,
+                    maxLines = 6,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 112.dp, max = 220.dp)
                 )
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = contactRole,
-                        onValueChange = { contactRole = it; save() },
-                        label = { Text("سمت شخص") }, singleLine = true,
-                        modifier = Modifier.weight(1f)
-                    )
-                    OutlinedTextField(
-                        value = contactCategory,
-                        onValueChange = { contactCategory = it; save() },
-                        label = { Text("گروه فعالیت") }, singleLine = true,
-                        modifier = Modifier.weight(1f)
-                    )
+                if (companyName.isNotBlank()) {
+                    Text("مجموعه: " + companyName,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary)
                 }
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    categoryChoices.forEach { category ->
-                        FilterChip(
-                            selected = contactCategory == category,
-                            onClick = { contactCategory = category; save() },
-                            label = { Text(category) }
+                TextButton(onClick = { showExtraDetails = !showExtraDetails }) {
+                    Text(if (showExtraDetails) "بستن اطلاعات تکمیلی ▲"
+                        else "سمت، گروه و جزئیات بیشتر ▼")
+                }
+                if (showExtraDetails) {
+                    Row(Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = contactRole,
+                            onValueChange = { contactRole = it; save() },
+                            label = { Text("سمت شخص") }, singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                        OutlinedTextField(
+                            value = contactCategory,
+                            onValueChange = { contactCategory = it; save() },
+                            label = { Text("گروه فعالیت") }, singleLine = true,
+                            modifier = Modifier.weight(1f)
                         )
                     }
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        (categoryChoices + customCategories).distinct().forEach { category ->
+                            FilterChip(
+                                selected = contactCategory == category,
+                                onClick = { contactCategory = category; save() },
+                                label = { Text(category) }
+                            )
+                        }
+                    }
+                    OutlinedButton(onClick = { addCategoryDialog = true }) {
+                        Text("+ گروه جدید")
+                    }
                 }
-                Text(
-                    "این کادر خودکار ذخیره می‌شود؛ متن ویس و اطلاعات قابل تشخیص هم به همین‌جا اضافه می‌شود.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.secondary
+                if (recordId > 0L && (contactRole.isBlank() || contactCategory.isBlank()) &&
+                    db.callEvents(recordId).isNotEmpty()) {
+                    AssistChip(
+                        onClick = { showExtraDetails = true },
+                        label = { Text("اطلاعات این مشتری ناقص است؛ تکمیل سمت و گروه") }
+                    )
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                    Button(
+                        onClick = {
+                            val transcript = pendingVoiceTranscript.ifBlank { note.trim() }
+                            if (transcript.isNotBlank() || pendingVoiceFilePath.isNotBlank()) {
+                                addSpeechToCapture(transcript)
+                            }
+                        },
+                        enabled = !agentBusy && !isRecording && !voiceTranscribing &&
+                            (note.isNotBlank() || pendingVoiceFilePath.isNotBlank()),
+                        modifier = Modifier.weight(1f)
+                    ) { Text(if (agentBusy) "در حال پردازش..." else "✦ پردازش با هوش مصنوعی") }
+                    OutlinedButton(onClick = { takePhoto() }) { Text("▣") }
+                }
+                if (isRecording || voiceTranscribing || googleVoiceBusy) {
+                    Text(if (isRecording) "● ضبط صدا فعال است؛ دایره قرمز را برای پایان بزن"
+                        else googleVoiceStage.ifBlank { "در حال تبدیل گفتار به متن..." },
+                        color = Color(0xFFB72D35), style = MaterialTheme.typography.bodySmall)
+                }
+                if (recordingError.isNotBlank()) {
+                    Text(recordingError, color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall)
+                }
+                if (!directGeminiSettings.configured && !textAgentSettings.configured &&
+                    agentMessages.isNotEmpty()) {
+                    Text("کلید رایگان Gemini هنوز در تنظیمات وارد نشده است؛ پردازش محلی فعال است.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.secondary)
+                }
+                TextButton(onClick = { showReminderDetails = !showReminderDetails }) {
+                    val number = db.allReminders().count { it.entryId == recordId }
+                    Text(if (showReminderDetails) "بستن قرارها ▲"
+                        else "▤ قرار و یادآوری ($number) ▼")
+                }
+                if (showReminderDetails) ReminderComposer(
+                    db = db,
+                    entryId = recordId,
+                    refreshKey = reminderRevision,
+                    ensureContact = { ensureRecord() },
+                    onSaved = { refresh() },
+                    onRequestNotification = { requestReminderNotificationPermission() }
                 )
+
                 if (lastVoiceActions.isNotEmpty()) {
                     Card(colors = CardDefaults.cardColors(
                         containerColor = Color(0xFFE3F3EF)
@@ -1289,133 +1844,10 @@ private fun CrmHome(initialRecordId: Long) {
                         }
                     }
                 }
-                Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
-                    Column(Modifier.fillMaxWidth().padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Agent سبک پردازش متن", fontWeight = FontWeight.SemiBold)
-                        Text("پس از تبدیل گفتار گوگل، فقط متن و حداکثر ۱۵ مخاطب مرتبط برای تحلیل فرستاده می‌شود. پردازش محلی حتی بدون Agent ادامه دارد؛ سرور و کلید مدل باید جداگانه تنظیم شوند.",
-                            style = MaterialTheme.typography.bodySmall)
-                        OutlinedTextField(value = agentUrl, onValueChange = { agentUrl = it },
-                            label = { Text("آدرس HTTPS سرور Agent") },
-                            singleLine = true, modifier = Modifier.fillMaxWidth())
-                        OutlinedTextField(value = agentPairingToken,
-                            onValueChange = { agentPairingToken = it },
-                            label = { Text("کد اتصال اختصاصی سرور") },
-                            visualTransformation = PasswordVisualTransformation(),
-                            singleLine = true, modifier = Modifier.fillMaxWidth())
-                        Row(verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(onClick = {
-                                runCatching {
-                                    textAgentSettings.save(agentUrl, agentPairingToken)
-                                    agentPairingToken = ""
-                                    agentOptIn = true
-                                    agentPrefs.edit().putBoolean("enabled", true).apply()
-                                }.onSuccess {
-                                    Toast.makeText(context, "تنظیمات Agent ذخیره شد", Toast.LENGTH_SHORT).show()
-                                }.onFailure { error ->
-                                    Toast.makeText(context, error.localizedMessage, Toast.LENGTH_LONG).show()
-                                }
-                            }) { Text("ذخیره اتصال") }
-                            Text("فعال", style = MaterialTheme.typography.bodySmall)
-                            Switch(checked = agentOptIn,
-                                enabled = textAgentSettings.configured,
-                                onCheckedChange = { value ->
-                                    agentOptIn = value
-                                    agentPrefs.edit().putBoolean("enabled", value).apply()
-                                })
-                        }
-                        if (agentBusy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                        agentMessages.forEach { message ->
-                            Text(message, style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.secondary)
-                        }
-                    }
+                TextButton(onClick = { showMapDetails = !showMapDetails }) {
+                    Text(if (showMapDetails) "بستن نقشه ▲" else "⌖ موقعیت و نقشه ▼")
                 }
-                Card(colors = CardDefaults.cardColors(
-                    containerColor = if (isRecording) Color(0xFFFFF0EC) else Color(0xFFE3F3EF)
-                )) {
-                    Column(Modifier.fillMaxWidth().padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(
-                            if (isRecording) "● در حال صحبت؛ متن تا پایان نمایش داده نمی‌شود"
-                            else if (googleVoiceBusy) "در حال دریافت نتیجه نهایی..."
-                            else "ثبت گفتار مشتری",
-                            fontWeight = FontWeight.Bold,
-                            color = if (isRecording) Color(0xFF9C2929) else Color(0xFF08685F)
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            FilterChip(
-                                selected = googleVoiceMode,
-                                enabled = !isRecording && !googleVoiceBusy,
-                                onClick = { googleVoiceMode = true; recordingError = "" },
-                                label = { Text("گوگل · متن") }
-                            )
-                            FilterChip(
-                                selected = !googleVoiceMode,
-                                enabled = !isRecording && !googleVoiceBusy,
-                                onClick = { googleVoiceMode = false; recordingError = "" },
-                                label = { Text("ضبط فایل صوتی") }
-                            )
-                        }
-                        Text(
-                            if (googleVoiceMode)
-                                "گوگل هنگام صحبت گوش می‌دهد؛ هیچ متن زنده‌ای نمایش داده نمی‌شود. بعد از «پایان»، متن خودکار در کادر اصلی ثبت می‌شود. این حالت فایل صوتی ذخیره نمی‌کند."
-                            else
-                                "فایل صوتی ذخیره می‌شود. تبدیل فایل ذخیره‌شده با سرویس گوگل در بعضی گوشی‌ها پشتیبانی نمی‌شود.",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                        if (isRecording) {
-                            val seconds = ((recordingClock - recordingStartedAt) / 1000L).coerceAtLeast(0L)
-                            Text("%02d:%02d".format(seconds / 60L, seconds % 60L),
-                                style = MaterialTheme.typography.headlineMedium,
-                                fontWeight = FontWeight.Bold)
-                        }
-                        if (googleVoiceBusy) {
-                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                        }
-                        if (googleVoiceStage.isNotBlank() && (googleVoiceMode || googleVoiceBusy)) {
-                            Text(googleVoiceStage, style = MaterialTheme.typography.labelSmall)
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                onClick = {
-                                    if (isRecording) {
-                                        if (googleVoiceMode) stopGoogleDictation()
-                                        else stopRecording()
-                                    } else if (context.checkSelfPermission(
-                                        Manifest.permission.RECORD_AUDIO
-                                    ) == PackageManager.PERMISSION_GRANTED) {
-                                        if (googleVoiceMode) beginGoogleDictation()
-                                        else beginRecording()
-                                    } else {
-                                        recordingError = "درخواست مجوز میکروفون…"
-                                        permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                    }
-                                },
-                                enabled = !googleVoiceBusy,
-                                modifier = Modifier.weight(1f),
-                                colors = if (isRecording) ButtonDefaults.buttonColors(
-                                    containerColor = Color(0xFFB42626)
-                                ) else ButtonDefaults.buttonColors()
-                            ) {
-                                Text(
-                                    if (isRecording) "■ پایان"
-                                    else if (googleVoiceMode) "● شروع گفتار"
-                                    else "● ضبط فایل صوتی"
-                                )
-                            }
-                            OutlinedButton(
-                                onClick = { takePhoto() },
-                                enabled = !isRecording && !googleVoiceBusy
-                            ) { Text("📷 عکس") }
-                        }
-                        if (recordingError.isNotBlank()) {
-                            Text(recordingError, color = MaterialTheme.colorScheme.error,
-                                style = MaterialTheme.typography.bodySmall)
-                        }
-                    }
-                }
+                if (showMapDetails) {
                 Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFE3F3EF))) {
                     Column(
                         modifier = Modifier.fillMaxWidth().padding(12.dp),
@@ -1467,22 +1899,14 @@ private fun CrmHome(initialRecordId: Long) {
                         }
                     }
                 }
-
-                VoiceAgentPanel(
-                    autoTranscribePaths = pendingAutoTranscriptions,
-                    onAutoConsumed = { consumed ->
-                        pendingAutoTranscriptions = pendingAutoTranscriptions.filterNot { it == consumed }
-                    },
-                    audioPaths = files.filter { it.type == "audio" }.map { it.filePath } +
-                        draftAttachments.mapNotNull { encoded ->
-                            val parts = encoded.split("|", limit = 2)
-                            if (parts.size == 2 && parts[0] == "audio") parts[1] else null
-                        },
-                    onTranscribed = { transcript -> addSpeechToCapture(transcript) }
-                )
+                }
 
                 if (files.isNotEmpty()) {
-                    Text("پیوست‌ها (${files.size})", fontWeight = FontWeight.Bold)
+                    TextButton(onClick = { showAttachments = !showAttachments }) {
+                        Text(if (showAttachments) "بستن پیوست‌ها ▲"
+                            else "پیوست‌ها (${files.size}) ▼")
+                    }
+                    if (showAttachments) {
                     files.forEachIndexed { index, attachment ->
                         OutlinedButton(
                             onClick = {
@@ -1497,9 +1921,10 @@ private fun CrmHome(initialRecordId: Long) {
                             Text("${index + 1}. $label")
                         }
                     }
+                    }
                 }
 
-                if (additionalNotes.isNotEmpty()) {
+                if (showExtraDetails && additionalNotes.isNotEmpty()) {
                     Text("یادداشت‌های قدیمی پرونده", fontWeight = FontWeight.SemiBold)
                     additionalNotes.forEach { item ->
                         Text(item.text, modifier = Modifier.fillMaxWidth().padding(8.dp),
@@ -1507,7 +1932,7 @@ private fun CrmHome(initialRecordId: Long) {
                     }
                 }
 
-                if (recordId > 0L) {
+                if (showExtraDetails && recordId > 0L) {
                     val events = db.callEvents(recordId)
                     if (events.isNotEmpty()) {
                         Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
@@ -1522,6 +1947,7 @@ private fun CrmHome(initialRecordId: Long) {
                     }
                 }
 
+                if (showExtraDetails) {
                 Text("برچسب‌ها", fontWeight = FontWeight.SemiBold)
                 Row(
                     Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -1539,64 +1965,12 @@ private fun CrmHome(initialRecordId: Long) {
                         )
                     }
                 }
-
-                Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFE1F3EF))) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text("شناسایی تماس‌های کاری", fontWeight = FontWeight.Bold)
-                        Text(
-                            if (callerEnabled) "فعال است؛ فقط تماس شماره‌های ثبت‌شده در CRM اعلان شناسایی دریافت می‌کنند و با لمس آن کارت تماس پویارا باز می‌شود."
-                            else "برای نمایش نام، عکس، سمت و مجموعه مشتریان ثبت‌شده روی تماس عادی گوشی، شناسایی تماس کاری را فعال کن.",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                        if (!callerEnabled) {
-                            TextButton(onClick = { activateCallerContext() }) {
-                                Text("فعال‌سازی شناسایی تماس")
-                            }
-                        }
-                        HorizontalDivider()
-                        Text("شماره‌گیر اصلی گوشی تغییر نمی‌کند؛ تماس‌های خارج از پویارا هیچ اعلانی از CRM دریافت نمی‌کنند.",
-                            style = MaterialTheme.typography.bodySmall)
-                        Text("کارت تماس کاری جایگزین دکمه پاسخ و رد تماس اندروید نیست؛ این کنترل‌ها در صفحه تماس معمولی گوشی باقی می‌مانند.",
-                            style = MaterialTheme.typography.bodySmall)
-                    }
                 }
 
-                if (Build.VERSION.SDK_INT >= 33) {
-                    OutlinedButton(onClick = {
-                        val manager = context.getSystemService(StatusBarManager::class.java)
-                        manager?.requestAddTileService(
-                            ComponentName(context, QuickCaptureTileService::class.java),
-                            "ثبت مخاطب",
-                            Icon.createWithResource(context, android.R.drawable.ic_menu_add),
-                            context.mainExecutor
-                        ) { }
-                    }) {
-                        Text("افزودن میان‌بر به پنل بالای گوشی")
-                    }
-                } else {
-                    Text(
-                        "میان‌بر ثبت مخاطب را از ویرایش پنل تنظیمات سریع گوشی اضافه کن.",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-
-                Text(
-                    "فایل‌ها و اطلاعات روی همین گوشی نگهداری می‌شوند. پردازش هوش مصنوعی در نسخه بعدی اضافه می‌شود.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.secondary
-                )
-                ReminderComposer(
-                    db = db,
-                    entryId = recordId,
-                    refreshKey = reminderRevision,
-                    ensureContact = { ensureRecord() },
-                    onSaved = { refresh() },
-                    onRequestNotification = { requestReminderNotificationPermission() }
-                )
             }
         } else if (page == "messages") {
             Column(
-                Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                Modifier.weight(1f).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
@@ -1667,7 +2041,7 @@ private fun CrmHome(initialRecordId: Long) {
             }
         } else if (page == "agenda") {
             Column(
-                Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                Modifier.weight(1f).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 WeeklyAgenda(
@@ -1684,32 +2058,22 @@ private fun CrmHome(initialRecordId: Long) {
                 modifier = Modifier.fillMaxWidth()
             ) { Text("⌖ نقشه مشتریان و افراد اطراف من") }
             // Backup data support is retained for migration, but controls are hidden from contacts.
-            Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
-                Column(Modifier.fillMaxWidth().padding(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                    Text("مخاطبین مشترک با Google Contacts", fontWeight = FontWeight.SemiBold)
-                    Text(if (googleAccount.isBlank()) "حساب گوگل انتخاب نشده است"
-                        else "حساب انتخاب‌شده: " + googleAccount,
-                        style = MaterialTheme.typography.bodySmall)
-                    Text("فقط مخاطبین دارای شناسه پویارا وارد می‌شوند. با همگام‌سازی، نام، شماره، سمت، گروه و یادداشت‌های CRM در Google Contacts همین حساب ذخیره می‌شوند. همگام‌سازی خود Google باید در تنظیمات گوشی روشن باشد.",
-                        style = MaterialTheme.typography.bodySmall)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = {
-                            runCatching {
-                                accountPicker.launch(AccountManager.newChooseAccountIntent(
-                                    null, null, arrayOf("com.google"), false,
-                                    null, null, null, null))
-                            }.onFailure {
-                                Toast.makeText(context, "حساب گوگل را ابتدا به تنظیمات گوشی اضافه کن",
-                                    Toast.LENGTH_LONG).show()
-                            }
-                        }) { Text("انتخاب حساب گوگل") }
-                        if (googleAccount.isNotBlank()) {
-                            OutlinedButton(onClick = { requestGoogleSync() },
-                                enabled = !googleSyncBusy) {
-                                Text(if (googleSyncBusy) "در حال همگام‌سازی" else "همگام‌سازی")
-                            }
-                        }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = {
+                    runCatching {
+                        accountPicker.launch(AccountManager.newChooseAccountIntent(
+                            null, null, arrayOf("com.google"), false,
+                            null, null, null, null))
+                    }.onFailure {
+                        Toast.makeText(context, "حساب گوگل را در تنظیمات گوشی اضافه کن",
+                            Toast.LENGTH_SHORT).show()
+                    }
+                }) { Text(if (googleAccount.isBlank()) "+ افزودن حساب گوگل"
+                    else "✓ حساب گوگل") }
+                if (googleAccount.isNotBlank()) {
+                    TextButton(onClick = { requestGoogleSync() }, enabled = !googleSyncBusy) {
+                        Text(if (googleSyncBusy) "در حال همگام‌سازی..." else "همگام‌سازی")
                     }
                 }
             }
@@ -1732,18 +2096,44 @@ private fun CrmHome(initialRecordId: Long) {
                     )
                 }
             }
-            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                (listOf("همه گروه‌ها") + allEntries.map { it.category.ifBlank { "دسته‌بندی‌نشده" } }.distinct().sorted()).forEach { category ->
-                    FilterChip(selected = filterCategory == category,
-                        onClick = { filterCategory = category }, label = { Text(category) })
+            Row(Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                TextButton(onClick = { showAllGroups = !showAllGroups }) {
+                    Text("گروه‌ها: " + filterCategory +
+                        if (showAllGroups) " ▲" else " ▼")
+                }
+                TextButton(onClick = { addCategoryDialog = true }) { Text("+ گروه جدید") }
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = { showAllRoles = !showAllRoles }) {
+                    Text(if (showAllRoles) "سمت‌ها ▲" else "سمت‌ها ▼")
                 }
             }
-            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                (listOf("همه سمت‌ها") + allEntries.mapNotNull { it.role.takeIf(String::isNotBlank) }.distinct().sorted()).forEach { role ->
-                    FilterChip(selected = filterRole == role,
-                        onClick = { filterRole = role }, label = { Text(role) })
+            if (showAllGroups) {
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                    (listOf("همه گروه‌ها", "دسته‌بندی‌نشده") +
+                        categoryChoices + customCategories +
+                        allEntries.map { it.category }.filter { it.isNotBlank() })
+                        .distinct().sorted().forEach { category ->
+                        FilterChip(selected = filterCategory == category,
+                            onClick = {
+                                filterCategory = category
+                                showAllGroups = false
+                            }, label = { Text(category) })
+                    }
+                }
+            }
+            if (showAllRoles) {
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                    (listOf("همه سمت‌ها") +
+                        allEntries.mapNotNull { it.role.takeIf(String::isNotBlank) })
+                        .distinct().sorted().forEach { role ->
+                        FilterChip(selected = filterRole == role,
+                            onClick = { filterRole = role; showAllRoles = false },
+                            label = { Text(role) })
+                    }
                 }
             }
             val filtered = allEntries.filter { entry ->
@@ -1755,7 +2145,7 @@ private fun CrmHome(initialRecordId: Long) {
                         db.notes(entry.id).any { it.text.contains(search, ignoreCase = true) })
             }
             LazyColumn(
-                Modifier.fillMaxSize(),
+                Modifier.weight(1f).padding(bottom = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 filtered.sortedWith(compareBy<ContactEntry> { it.category }.thenBy { it.company })
@@ -1873,6 +2263,130 @@ private fun CrmHome(initialRecordId: Long) {
                     }
                 }
             }
+        }
+        if (addCategoryDialog) {
+            AlertDialog(
+                onDismissRequest = { addCategoryDialog = false },
+                title = { Text("افزودن گروه جدید") },
+                text = {
+                    OutlinedTextField(
+                        value = newCategoryName,
+                        onValueChange = { newCategoryName = it },
+                        label = { Text("مثلاً فروشگاه مبلمان") },
+                        singleLine = true
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val value = newCategoryName.trim().take(100)
+                        if (value.isNotBlank()) {
+                            customCategories = customCategories + value
+                            context.getSharedPreferences("crm_categories", Context.MODE_PRIVATE)
+                                .edit().putStringSet("names", customCategories).apply()
+                            if (page == "capture") {
+                                contactCategory = value
+                                save()
+                            } else {
+                                filterCategory = value
+                            }
+                        }
+                        newCategoryName = ""
+                        addCategoryDialog = false
+                    }, enabled = newCategoryName.isNotBlank()) { Text("افزودن") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { addCategoryDialog = false }) { Text("انصراف") }
+                }
+            )
+        }
+        if (pendingMeetingEntryId > 0L) {
+            AlertDialog(
+                onDismissRequest = {
+                    pendingMeetingEntryId = 0L
+                    pendingMeetingTitle = ""
+                },
+                title = { Text("تأیید قرار پیشنهادی Gemini") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(pendingMeetingTitle)
+                        Text("ساعت پیشنهادی: " +
+                            pendingMeetingTime.ifBlank { "نامشخص" })
+                        Text("روز و ساعت را یک‌بار مشخص کن تا قرار اشتباه ثبت نشود.",
+                            style = MaterialTheme.typography.bodySmall)
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val owner = pendingMeetingEntryId
+                        val title = pendingMeetingTitle
+                        val lead = pendingMeetingLead
+                        val suggested = runCatching {
+                            LocalTime.parse(pendingMeetingTime)
+                        }.getOrDefault(LocalTime.of(15, 0))
+                        val now = Calendar.getInstance()
+                        DatePickerDialog(context, { _, year, month, day ->
+                            val chosen = Calendar.getInstance().apply {
+                                set(Calendar.YEAR, year)
+                                set(Calendar.MONTH, month)
+                                set(Calendar.DAY_OF_MONTH, day)
+                            }
+                            TimePickerDialog(context, { _, hour, minute ->
+                                chosen.set(Calendar.HOUR_OF_DAY, hour)
+                                chosen.set(Calendar.MINUTE, minute)
+                                chosen.set(Calendar.SECOND, 0)
+                                chosen.set(Calendar.MILLISECOND, 0)
+                                if (chosen.timeInMillis <= System.currentTimeMillis()) {
+                                    Toast.makeText(context,
+                                        "زمان قرار باید در آینده باشد", Toast.LENGTH_LONG).show()
+                                } else {
+                                    val id = db.addReminder(owner,
+                                        title.take(160), chosen.timeInMillis, lead)
+                                    db.allReminders().firstOrNull { it.id == id }
+                                        ?.let { ReminderScheduler.schedule(context, it) }
+                                    needVoiceNotificationPermission = true
+                                    refresh()
+                                    Toast.makeText(context,
+                                        "قرار در برنامه کاری ثبت شد", Toast.LENGTH_LONG).show()
+                                }
+                            }, suggested.hour, suggested.minute, true).show()
+                        }, now.get(Calendar.YEAR), now.get(Calendar.MONTH),
+                            now.get(Calendar.DAY_OF_MONTH)).show()
+                        pendingMeetingEntryId = 0L
+                        pendingMeetingTitle = ""
+                    }) { Text("انتخاب روز و ساعت") }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        pendingMeetingEntryId = 0L
+                        pendingMeetingTitle = ""
+                    }) { Text("بعداً") }
+                }
+            )
+        }
+        if (pendingDeleteReminderId > 0L) {
+            AlertDialog(
+                onDismissRequest = { pendingDeleteReminderId = 0L },
+                title = { Text("حذف قرار کاری") },
+                text = { Text("قرار «" + pendingDeleteReminderTitle + "» حذف شود؟") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val target = db.allReminders().firstOrNull {
+                            it.id == pendingDeleteReminderId && it.entryId == recordId }
+                        if (target != null) {
+                            ReminderScheduler.cancel(context, target.id)
+                            db.deleteReminder(target.id)
+                            refresh()
+                        }
+                        pendingDeleteReminderId = 0L
+                        pendingDeleteReminderTitle = ""
+                    }) { Text("بله، حذف شود") }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        pendingDeleteReminderId = 0L
+                    }) { Text("انصراف") }
+                }
+            )
         }
         if (showScanDialog) {
             AlertDialog(
