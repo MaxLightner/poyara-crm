@@ -47,7 +47,7 @@ class PoyaraCallActivity : ComponentActivity() {
                     }
                 }
             }
-            val name = entry?.name?.ifBlank { entry.company }
+            val name = entry?.let { it.name.ifBlank { it.company } }
                 ?: number.ifBlank { "تماس ناشناس" }
             val label = when (state) {
                 Call.STATE_RINGING -> "تماس ورودی"
@@ -101,9 +101,6 @@ class PoyaraCallActivity : ComponentActivity() {
                     } else if (call != null && state != Call.STATE_DISCONNECTED) {
                         Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                             OutlinedButton(onClick = {
-                                (applicationContext as? PoyaraInCallService)?.switchMute()
-                                // Service is not an application context; Telecom controls
-                                // are handled through the bound service instance below.
                                 PoyaraInCallService.current?.switchMute()
                             }) { Text(if (PoyaraCallState.muted) "وصل میکروفون" else "بی‌صدا") }
                             OutlinedButton(onClick = {
