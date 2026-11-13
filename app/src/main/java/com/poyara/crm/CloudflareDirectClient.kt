@@ -1,7 +1,6 @@
 package com.poyara.crm
 
 import android.content.Context
-import android.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -121,6 +120,14 @@ themselves, keep only the later correction as the proposed final fact.
 Produce corrected_text in accurate Persian spelling, without inventing words.
 Return structured JSON only, exactly matching the schema.
 Extract people, phone number, organization, role, business category and notes.
+When the speaker gives TWO or more numbers for one person, put the first valid
+number into contacts[0].phone and emit one add_phone action for EACH additional
+number. When correcting a number, prefer the speaker's latest explicit correction.
+Never reverse or invent an unclear phone number. Different people should not
+silently share one record: ask which person owns a number when unclear.
+When the current record is empty, you may populate contact name/phone/company
+and emit additional add_phone actions. Contact role is a free-text profession,
+not a fixed enum. Use concise corrected_text in Persian.
 For this ONE active contact, emit actions as appropriate: correct_name,
 correct_phone, remove_phone, add_phone, set_company, set_role,
 set_category, create_reminder, update_reminder,
