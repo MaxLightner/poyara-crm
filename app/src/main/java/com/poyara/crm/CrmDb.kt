@@ -569,6 +569,12 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
         }
     }
 
+    fun adoptSyncId(id: Long, syncId: String) {
+        require(id > 0L && syncId.isNotBlank())
+        writableDatabase.update("entries", ContentValues().apply { put("sync_id", syncId) },
+            "id=?", arrayOf(id.toString()))
+    }
+
     fun updateGroupCompany(rootEntryId: Long, company: String) {
         require(rootEntryId > 0L)
         writableDatabase.update(
