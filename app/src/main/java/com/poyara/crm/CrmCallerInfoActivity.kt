@@ -75,7 +75,7 @@ class CrmCallerInfoActivity : ComponentActivity() {
                             }
                         }
                     }
-                    Text(entry?.name?.ifBlank { entry.company } ?: "مخاطب ثبت‌شده",
+                    Text(entry?.let { it.name.ifBlank { it.company } } ?: "مخاطب ثبت‌شده",
                         style = MaterialTheme.typography.headlineMedium,
                         fontWeight = FontWeight.Bold)
                     Text(calledNumber.ifBlank { entry?.phone.orEmpty() },
