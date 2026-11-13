@@ -46,6 +46,26 @@ class VoiceApiTests(unittest.TestCase):
             )
             self.assertEqual(response.status_code, 415)
 
+    def test_text_agent_requires_pairing_token(self):
+        with patch.dict(os.environ, {"POYARA_VOICE_TOKEN": "a" * 40}):
+            response = self.client.post("/v1/text/analyze",
+                json={"transcript": "فردا ساعت ۱۴:۳۰ جلسه دارم"})
+            self.assertEqual(response.status_code, 401)
+
+    def test_text_agent_requires_server_model_key(self):
+        with patch.dict(os.environ, {
+            "POYARA_VOICE_TOKEN": "a" * 40,
+            "OPENAI_API_KEY": ""
+        }):
+            response = self.client.post("/v1/text/analyze",
+                headers={"Authorization": "Bearer " + "a" * 40},
+                json={"transcript": "آقای حسینی مدیر مبلمان لیپاریس است"})
+            self.assertEqual(response.status_code, 503)
+
+    def test_agent_schema_has_industry_category(self):
+        self.assertIn("category",
+            PROPOSAL_SCHEMA["properties"]["contacts"]["items"]["properties"])
+
     def test_persian_digits(self):
         self.assertEqual(normalize_numbers("۰۹۱۲٣٤٥٦٧٨"), "0912345678")
 
