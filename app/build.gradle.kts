@@ -12,8 +12,8 @@ android {
         applicationId = "com.poyara.crm"
         minSdk = 26
         targetSdk = 35
-        versionCode = 17
-        versionName = "0.16.1"
+        versionCode = 18
+        versionName = "0.17.0"
     }
 
     buildTypes {
@@ -47,5 +47,12 @@ dependencies {
     implementation("com.google.android.gms:play-services-location:21.3.0")
     implementation("cz.adaptech.tesseract4android:tesseract4android-openmp:4.9.0")
     implementation("com.google.mlkit:text-recognition:16.0.1")
+    testImplementation("junit:junit:4.13.2")
     debugImplementation("androidx.compose.ui:ui-tooling")
+}
+
+// Keep Android's standard APK workflow while ensuring the local Persian voice
+// parser tests run before a new build is delivered.
+tasks.matching { it.name == "assembleDebug" }.configureEach {
+    dependsOn("testDebugUnitTest")
 }

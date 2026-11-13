@@ -290,6 +290,22 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
         return writableDatabase.insertOrThrow("reminders", null, values)
     }
 
+    /** Used by explicit spoken corrections. Keep the same reminder ID so the
+     * previous Android alarm can be cancelled and its new time scheduled.
+     */
+    fun updateReminder(id: Long, entryId: Long, title: String,
+                       dueAt: Long, remindDaysBefore: Int): Boolean {
+        require(id > 0L && entryId > 0L && dueAt > System.currentTimeMillis())
+        val count = writableDatabase.update("reminders", ContentValues().apply {
+            put("title", title.trim())
+            put("due_at", dueAt)
+            put("remind_days_before", remindDaysBefore.coerceIn(0, 7))
+            put("done", 0)
+        }, "id=? AND entry_id=? AND done=0",
+            arrayOf(id.toString(), entryId.toString()))
+        return count == 1
+    }
+
     fun remindersBetween(startAt: Long, endAt: Long): List<WorkReminder> {
         val result = mutableListOf<WorkReminder>()
         readableDatabase.query(
