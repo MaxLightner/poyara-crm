@@ -1214,64 +1214,43 @@ private fun CrmHome(initialRecordId: Long) {
                 title = { Text("اطلاعات خوانده‌شده از کارت") },
                 text = {
                     Column(
-                        Modifier.fillMaxWidth().heightIn(max = 500.dp)
+                        Modifier.fillMaxWidth().heightIn(max = 480.dp)
                             .verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text("قبل از ثبت، موارد استخراج‌شده را بررسی و اصلاح کن.")
-                        OutlinedTextField(
-                            value = scanPersonName,
-                            onValueChange = { scanPersonName = it },
-                            label = { Text("نام شخص") },
-                            modifier = Modifier.fillMaxWidth()
+                        Text("نتیجه کارت بعد از تأیید به همان کادر بزرگ اطلاعات اضافه می‌شود؛ نیازی به پرکردن فیلد جدا نیست.")
+                        val lines = listOfNotNull(
+                            scanPersonName.trim().takeIf { it.isNotBlank() }?.let { "نام: " + it },
+                            scanCompany.trim().takeIf { it.isNotBlank() }?.let { "مجموعه: " + it },
+                            scanPhone.trim().takeIf { it.isNotBlank() }?.let { "شماره: " + it },
+                            scanAddress.trim().takeIf { it.isNotBlank() }?.let { "آدرس: " + it },
+                            scanEmail.trim().takeIf { it.isNotBlank() }?.let { "ایمیل: " + it },
+                            scanWebsite.trim().takeIf { it.isNotBlank() }?.let { "وب‌سایت: " + it },
+                            scanRawText.trim().takeIf { it.isNotBlank() }?.let { "متن کارت: " + it }
                         )
-                        OutlinedTextField(
-                            value = scanCompany,
-                            onValueChange = { scanCompany = it },
-                            label = { Text("نام مجموعه / برند") },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        OutlinedTextField(
-                            value = scanPhone,
-                            onValueChange = { scanPhone = it },
-                            label = { Text("شماره تماس") },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        OutlinedTextField(
-                            value = scanAddress,
-                            onValueChange = { scanAddress = it },
-                            label = { Text("آدرس") },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        OutlinedTextField(
-                            value = scanEmail,
-                            onValueChange = { scanEmail = it },
-                            label = { Text("ایمیل") },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        OutlinedTextField(
-                            value = scanWebsite,
-                            onValueChange = { scanWebsite = it },
-                            label = { Text("وب‌سایت") },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Text("متن تشخیص‌داده‌شده", fontWeight = FontWeight.SemiBold)
-                        Text(scanRawText, style = MaterialTheme.typography.bodySmall)
+                        Text(lines.joinToString("\n").ifBlank { "متنی از کارت خوانده نشد" })
                     }
                 },
                 confirmButton = {
                     TextButton(onClick = {
-                        personName = scanPersonName.trim()
-                        companyName = scanCompany.trim()
-                        phone = scanPhone.trim()
-                        val extracted = buildList {
-                            if (scanAddress.isNotBlank()) add("آدرس: ${scanAddress.trim()}")
-                            if (scanEmail.isNotBlank()) add("ایمیل: ${scanEmail.trim()}")
-                            if (scanWebsite.isNotBlank()) add("وب‌سایت: ${scanWebsite.trim()}")
-                            if (scanRawText.isNotBlank()) add("متن کارت: ${scanRawText.trim()}")
+                        val section = buildList {
+                            if (scanPersonName.isNotBlank()) add("نام: " + scanPersonName.trim())
+                            if (scanCompany.isNotBlank()) add("مجموعه: " + scanCompany.trim())
+                            if (scanPhone.isNotBlank()) add("شماره: " + scanPhone.trim())
+                            if (scanAddress.isNotBlank()) add("آدرس: " + scanAddress.trim())
+                            if (scanEmail.isNotBlank()) add("ایمیل: " + scanEmail.trim())
+                            if (scanWebsite.isNotBlank()) add("وب‌سایت: " + scanWebsite.trim())
+                            if (scanRawText.isNotBlank()) add("متن کارت: " + scanRawText.trim())
                         }.joinToString("\n")
-                        note = listOf(note.trim(), extracted).filter { it.isNotBlank() }
-                            .joinToString("\n\n")
+                        if (section.isNotBlank() && !note.contains(section)) {
+                            note = listOf(note.trim(), "اطلاعات کارت:\n" + section)
+                                .filter { it.isNotBlank() }.joinToString("\n\n")
+                        }
+                        // Preserve previous hidden metadata and fill only missing
+                        // values; the user sees one combined capture textbox.
+                        personName = personName.ifBlank { scanPersonName.trim() }
+                        companyName = companyName.ifBlank { scanCompany.trim() }
+                        phone = phone.ifBlank { scanPhone.trim() }
                         val savedId = save(
                             newName = personName,
                             newPhone = phone,
@@ -1286,7 +1265,7 @@ private fun CrmHome(initialRecordId: Long) {
                         }
                         pendingScanPhoto = null
                         showScanDialog = false
-                    }) { Text("استفاده از اطلاعات") }
+                    }) { Text("افزودن به کادر اصلی") }
                 },
                 dismissButton = {
                     TextButton(onClick = {
