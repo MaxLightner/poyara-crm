@@ -380,10 +380,7 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
         pendingVoiceTranscript = listOf(pendingVoiceTranscript, value)
             .filter { it.isNotBlank() }.joinToString("\n")
         save(newNote = next)
-        agentMessages = listOf("گفتار ثبت شد؛ در حال تحلیل و استخراج اطلاعات...")
-        // A single action runs the local parser and optional cloud model; no
-        // second explicit "Process" tap is required.
-        if (!agentBusy) addSpeechToCapture(value)
+        agentMessages = listOf("گفتار ثبت شد؛ آماده تحلیل خودکار.")
     }
 
     // Voice input is the user's source of truth. Keep the original transcript,
@@ -982,6 +979,7 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                     recordingError = error ?: "سرویس گفتار گوشی متنی برنگرداند."
                 } else {
                     appendRawSpeech(text)
+                    addSpeechToCapture(text)
                     Toast.makeText(context, "گفتار ثبت شد و در حال پردازش است",
                         Toast.LENGTH_SHORT).show()
                 }
@@ -1093,8 +1091,10 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                 onFinish = { text, error ->
                     voiceTranscribing = false
                     voiceFileReader = null
-                    if (!text.isNullOrBlank()) appendRawSpeech(text)
-                    else if (agentOptIn && cloudflareSettings.configured &&
+                    if (!text.isNullOrBlank()) {
+                        appendRawSpeech(text)
+                        addSpeechToCapture(text)
+                    } else if (agentOptIn && cloudflareSettings.configured &&
                         agentPrivacyConsent) {
                         agentMessages = listOf("فایل صوتی دریافت شد؛ در حال تبدیل با Whisper و تحلیل هوشمند...")
                         addSpeechToCapture("")
