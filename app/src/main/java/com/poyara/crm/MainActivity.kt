@@ -163,6 +163,8 @@ private fun CrmHome(initialRecordId: Long) {
     var googleVoiceStage by remember { mutableStateOf("") }
     var googleSession by remember { mutableStateOf<GoogleDictationSession?>(null) }
     var pendingAutoTranscriptions by remember { mutableStateOf<List<String>>(emptyList()) }
+    var lastVoiceActions by remember { mutableStateOf<List<String>>(emptyList()) }
+    var needVoiceNotificationPermission by remember { mutableStateOf(false) }
     DisposableEffect(Unit) {
         onDispose { googleSession?.cancel() }
     }
@@ -281,23 +283,133 @@ private fun CrmHome(initialRecordId: Long) {
         return id
     }
 
-    // This single text box is the user's source of truth. Simple local
-    // recognition can annotate it but must not remove or replace spoken words.
+    // Voice input is the user's source of truth. Keep the original transcript,
+    // apply only deterministic, high-confidence CRM commands, and preserve older
+    // values unless the speaker explicitly says a correction.
     fun addSpeechToCapture(transcript: String) {
         if (transcript.isBlank()) return
-        val facts = VoiceLocalFacts.extract(transcript)
-        val section = VoiceLocalFacts.formatForCapture(transcript)
-        val combined = if (note.contains(transcript.trim())) note else
-            listOf(note.trim(), section).filter { it.isNotBlank() }.joinToString("\n\n")
-        val resolvedName = personName.ifBlank { facts.personName }
-        val resolvedCompany = companyName.ifBlank { facts.company }
-        val resolvedPhone = phone.ifBlank { facts.phone }
-        personName = resolvedName
-        companyName = resolvedCompany
-        phone = resolvedPhone
-        note = combined
-        save(newName = resolvedName, newPhone = resolvedPhone,
-            newCompany = resolvedCompany, newNote = combined)
+        val actions = PersianVoiceInterpreter.parse(transcript, personName, companyName, phone)
+        val previousName = personName
+        val previousCompany = companyName
+        val previousPhone = phone
+        val updatedName = when {
+            actions.correctPerson && actions.person != null -> actions.person
+            personName.isBlank() && actions.person != null -> actions.person
+            else -> personName
+        }
+        val updatedCompany = when {
+            actions.correctCompany && actions.company != null -> actions.company
+            companyName.isBlank() && actions.company != null -> actions.company
+            else -> companyName
+        }
+        val updatedPhone = when {
+            actions.correctPhone && actions.phone != null -> actions.phone
+            phone.isBlank() && actions.phone != null -> actions.phone
+            else -> phone
+        }
+        val feedback = mutableListOf<String>()
+        val warnings = actions.alerts.toMutableList()
+        if (updatedName != previousName) feedback += "نام: " + updatedName
+        if (updatedCompany != previousCompany) feedback += "مجموعه: " + updatedCompany
+        if (updatedPhone != previousPhone) feedback += "شماره: " + updatedPhone
+        if (actions.correctCompany && actions.company == null)
+            warnings += "نام صحیح مجموعه تشخیص داده نشد؛ مقدار قبلی تغییر نکرد."
+        if (actions.correctPerson && actions.person == null)
+            warnings += "نام صحیح شخص تشخیص داده نشد؛ مقدار قبلی تغییر نکرد."
+
+        personName = updatedName
+        companyName = updatedCompany
+        phone = updatedPhone
+
+        // Save the spoken note first so a valid reminder can be linked to this
+        // exact profile. Note-only profiles are allowed, no name/phone required.
+        val provisional = VoiceCaptureDocument.merge(
+            note, transcript, personName, companyName, phone, emptyList(), warnings)
+        note = provisional
+        val entryId = save(newName = personName, newCompany = companyName,
+            newPhone = phone, newNote = provisional)
+
+        val appointment = actions.appointment
+        if (appointment != null && entryId > 0L) {
+            try {
+                val matching = db.allReminders().filter {
+                    it.entryId == entryId &&
+                        if (appointment.category == "جلسه")
+                            it.title.contains("جلسه") else
+                            (it.title.contains("تماس") || it.title.contains("پیگیری"))
+                }
+                if (appointment.correction) {
+                    if (matching.size != 1) {
+                        warnings += "برای اصلاح زمان، باید دقیقاً یک قرار از این نوع در پرونده باشد."
+                    } else if (appointment.warning?.contains("صبح است یا عصر") == true) {
+                        warnings += appointment.warning
+                    } else {
+                        val previous = matching.single()
+                        val updatedDue = appointment.dueAt ?: if (
+                            appointment.minuteOfDay != null &&
+                            appointment.warning?.startsWith("روز ") == true
+                        ) {
+                            val zone = java.time.ZoneId.systemDefault()
+                            val date = java.time.Instant.ofEpochMilli(previous.dueAt)
+                                .atZone(zone).toLocalDate()
+                            date.atStartOfDay(zone).toInstant().toEpochMilli() +
+                                appointment.minuteOfDay * 60_000L
+                        } else null
+                        if (updatedDue == null || updatedDue <= System.currentTimeMillis()) {
+                            warnings += "زمان جدید قرار واضح یا معتبر نبود؛ قرار قبلی حفظ شد."
+                        } else {
+                            val changedLead = Regex("""[0-7]\s*روز\s*قبل|(?:صفر|یک|دو|سه|چهار|پنج|شش|هفت)\s*روز\s*قبل""")
+                                .containsMatchIn(PersianVoiceInterpreter.normalize(transcript))
+                            val lead = if (changedLead) appointment.leadDays else previous.remindDaysBefore
+                            if (db.updateReminder(previous.id, entryId, previous.title,
+                                    updatedDue, lead)) {
+                                ReminderScheduler.cancel(context, previous.id)
+                                db.allReminders().firstOrNull { it.id == previous.id }
+                                    ?.let { ReminderScheduler.schedule(context, it) }
+                                needVoiceNotificationPermission = true
+                                feedback += "زمان " + appointment.category + " اصلاح شد."
+                            } else warnings += "اصلاح قرار ذخیره نشد؛ از برنامه کاری بررسی کن."
+                        }
+                    }
+                } else if (appointment.dueAt == null) {
+                    appointment.warning?.let { warnings += it }
+                } else if (matching.any {
+                        it.dueAt == appointment.dueAt &&
+                            it.remindDaysBefore == appointment.leadDays
+                    }) {
+                    feedback += "این " + appointment.category + " قبلاً در برنامه کاری ثبت شده است."
+                } else {
+                    val target = listOf(personName, companyName).firstOrNull { it.isNotBlank() }
+                    val title = appointment.category +
+                        if (target == null) "" else " با " + target
+                    val reminderId = db.addReminder(
+                        entryId, title, appointment.dueAt, appointment.leadDays)
+                    val reminder = db.allReminders().first { it.id == reminderId }
+                    ReminderScheduler.createChannel(context)
+                    ReminderScheduler.schedule(context, reminder)
+                    needVoiceNotificationPermission = true
+                    feedback += appointment.category + " در برنامه کاری ثبت شد؛ یادآوری " +
+                        appointment.leadDays + " روز قبل."
+                }
+            } catch (error: Exception) {
+                warnings += "ثبت یا اصلاح قرار ناموفق بود؛ اطلاعات گفتار محفوظ است."
+            }
+        }
+        val upcoming = db.allReminders().filter { it.entryId == entryId }
+            .sortedBy { it.dueAt }.take(4).map {
+                val date = java.text.SimpleDateFormat(
+                    "EEE dd MMM · HH:mm", java.util.Locale("fa", "IR")
+                ).format(java.util.Date(it.dueAt))
+                it.title + " · " + date + " · " + it.remindDaysBefore + " روز قبل"
+            }
+        val revised = VoiceCaptureDocument.merge(
+            note, transcript, personName, companyName, phone, upcoming, warnings)
+        note = revised
+        save(newName = personName, newCompany = companyName,
+            newPhone = phone, newNote = revised)
+        lastVoiceActions = (feedback + warnings).distinct().ifEmpty {
+            listOf("متن گفتار ذخیره شد؛ دستور روشن دیگری برای اعمال پیدا نشد.")
+        }
     }
 
     fun ensureRecord(): Long {
@@ -329,6 +441,7 @@ private fun CrmHome(initialRecordId: Long) {
         groupSearch = ""
         phone = entry.phone
         note = entry.note
+        lastVoiceActions = emptyList()
         chosenTags = entry.tags
         draftLatitude = entry.latitude
         draftLongitude = entry.longitude
@@ -349,6 +462,7 @@ private fun CrmHome(initialRecordId: Long) {
         groupSearch = ""
         phone = ""
         note = ""
+        lastVoiceActions = emptyList()
         chosenTags = emptySet()
         additionalNotes = emptyList()
         noteDraft = ""
@@ -680,6 +794,12 @@ private fun CrmHome(initialRecordId: Long) {
             context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) reminderNotificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
+    LaunchedEffect(needVoiceNotificationPermission) {
+        if (needVoiceNotificationPermission) {
+            needVoiceNotificationPermission = false
+            requestReminderNotificationPermission()
+        }
+    }
 
     fun activateCallerContext() {
         if (Build.VERSION.SDK_INT >= 33 &&
@@ -832,6 +952,19 @@ private fun CrmHome(initialRecordId: Long) {
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.secondary
                 )
+                if (lastVoiceActions.isNotEmpty()) {
+                    Card(colors = CardDefaults.cardColors(
+                        containerColor = Color(0xFFE3F3EF)
+                    )) {
+                        Column(Modifier.fillMaxWidth().padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("آخرین پردازش گفتار", fontWeight = FontWeight.Bold)
+                            lastVoiceActions.forEach { line ->
+                                Text(line, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+                }
                 Card(colors = CardDefaults.cardColors(
                     containerColor = if (isRecording) Color(0xFFFFF0EC) else Color(0xFFE3F3EF)
                 )) {
