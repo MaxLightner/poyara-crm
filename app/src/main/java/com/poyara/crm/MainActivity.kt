@@ -57,7 +57,8 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private val tagChoices = listOf("مبلمان", "کابینت", "معماری", "پیگیری", "مشتری ثابت", "مهم")
+private val tagChoices = listOf("مبلمان", "کابینت", "معماری", "مدیریت", "پیگیری", "مشتری ثابت", "مهم")
+private val categoryChoices = listOf("مبل‌فروشی", "مهندسی ساختمان", "کابینت‌سازی", "سایر")
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -137,6 +138,10 @@ private fun CrmHome(initialRecordId: Long) {
     var phone by rememberSaveable {
         mutableStateOf(startupEntry?.phone ?: if (initialRecordId == 0L) draftPrefs.getString("phone", "").orEmpty() else "")
     }
+    var extraPhones by remember { mutableStateOf(startupEntry?.extraPhones ?: draftPrefs.getString("extra_phones", "").orEmpty().split("|").filter { it.isNotBlank() }) }
+    var contactRole by rememberSaveable { mutableStateOf(startupEntry?.role ?: draftPrefs.getString("role", "").orEmpty()) }
+    var contactCategory by rememberSaveable { mutableStateOf(startupEntry?.category ?: draftPrefs.getString("category", "").orEmpty()) }
+    var showExtraPhones by remember { mutableStateOf(extraPhones.isNotEmpty()) }
     var note by rememberSaveable {
         mutableStateOf(startupEntry?.note ?: if (initialRecordId == 0L) draftPrefs.getString("note", "").orEmpty() else "")
     }
@@ -149,6 +154,8 @@ private fun CrmHome(initialRecordId: Long) {
     var reminderRevision by remember { mutableIntStateOf(0) }
     var search by rememberSaveable { mutableStateOf("") }
     var filterTag by rememberSaveable { mutableStateOf("همه") }
+    var filterRole by rememberSaveable { mutableStateOf("همه سمت‌ها") }
+    var filterCategory by rememberSaveable { mutableStateOf("همه گروه‌ها") }
     var pendingPhoto by remember { mutableStateOf<File?>(null) }
     var recorder by remember { mutableStateOf<MediaRecorder?>(null) }
     var audioFile by remember { mutableStateOf<File?>(null) }
@@ -217,6 +224,9 @@ private fun CrmHome(initialRecordId: Long) {
             .putString("company", newCompany)
             .putLong("group_id", newGroupId)
             .putString("phone", newPhone)
+            .putString("extra_phones", extraPhones.joinToString("|"))
+            .putString("role", contactRole)
+            .putString("category", contactCategory)
             .putString("note", newNote)
             .putStringSet("tags", newTags.toSet())
             .putStringSet("attachments", draftAttachments.toSet())
@@ -269,7 +279,8 @@ private fun CrmHome(initialRecordId: Long) {
         val wasNew = recordId == 0L
         val id = db.save(
             recordId, newName, newPhone, newNote, tags,
-            newCompany, newGroupId.takeIf { it > 0L }
+            newCompany, newGroupId.takeIf { it > 0L },
+            extraPhones, contactRole, contactCategory
         )
         recordId = id
         chosenTags = tags
@@ -309,6 +320,17 @@ private fun CrmHome(initialRecordId: Long) {
         }
         val feedback = mutableListOf<String>()
         val warnings = actions.alerts.toMutableList()
+        if ((contactRole.isBlank() || actions.correctPerson) && !actions.role.isNullOrBlank()) {
+            contactRole = actions.role
+            feedback += "سمت: " + contactRole
+        }
+        if (contactCategory.isBlank() && !actions.category.isNullOrBlank()) {
+            contactCategory = actions.category
+            feedback += "گروه: " + contactCategory
+        }
+        if (contactRole.contains("مدیر") || contactRole.contains("مدیریت")) {
+            chosenTags = chosenTags + "مدیریت"
+        }
         if (updatedName != previousName) feedback += "نام: " + updatedName
         if (updatedCompany != previousCompany) feedback += "مجموعه: " + updatedCompany
         if (updatedPhone != previousPhone) feedback += "شماره: " + updatedPhone
@@ -449,7 +471,7 @@ private fun CrmHome(initialRecordId: Long) {
             val tags = chosenTags + inferredTags(note)
             recordId = db.save(
                 0L, personName, phone, note, tags, companyName,
-                selectedGroupId.takeIf { it > 0L }
+                selectedGroupId.takeIf { it > 0L }, extraPhones, contactRole, contactCategory
             )
             chosenTags = tags
             db.all().firstOrNull { it.id == recordId }?.company
@@ -468,6 +490,10 @@ private fun CrmHome(initialRecordId: Long) {
         selectedGroupId = entry.groupId ?: 0L
         groupSearch = ""
         phone = entry.phone
+        extraPhones = entry.extraPhones
+        showExtraPhones = extraPhones.isNotEmpty()
+        contactRole = entry.role
+        contactCategory = entry.category
         note = entry.note
         lastVoiceActions = emptyList()
         chosenTags = entry.tags
@@ -489,6 +515,10 @@ private fun CrmHome(initialRecordId: Long) {
         selectedGroupId = 0L
         groupSearch = ""
         phone = ""
+        extraPhones = emptyList()
+        showExtraPhones = false
+        contactRole = ""
+        contactCategory = ""
         note = ""
         lastVoiceActions = emptyList()
         chosenTags = emptySet()
