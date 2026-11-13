@@ -35,6 +35,11 @@ internal object PoyaraCallState {
 }
 
 class PoyaraInCallService : InCallService() {
+    companion object { var current: PoyaraInCallService? = null; private set }
+
+    override fun onCreate() { super.onCreate(); current = this }
+    override fun onDestroy() { current = null; super.onDestroy() }
+
     private val channel = "poyara_active_phone_calls"
     private val callback = object : Call.Callback() {
         override fun onStateChanged(call: Call, state: Int) {
