@@ -73,7 +73,7 @@ jobs:
           esac
           export POYARA_CENTRAL_AGENT_URL
           gradle --no-daemon :app:assembleDebug
-          version="$(sed -nE 's/^[[:space:]]*versionName = "([^"]+)"/\\1/p' app/build.gradle.kts | head -1)"
+          version="$(awk -F '"' '/versionName =/ {print $2; exit}' app/build.gradle.kts)"
           test -n "$version"
           echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
           cp app/build/outputs/apk/debug/app-debug.apk "POYARA-CRM-$version.apk"
