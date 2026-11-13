@@ -2119,26 +2119,6 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                 onClick = { openMap(0L) },
                 modifier = Modifier.fillMaxWidth()
             ) { Text("⌖ نقشه مشتریان و افراد اطراف من") }
-            // Backup data support is retained for migration, but controls are hidden from contacts.
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = {
-                    runCatching {
-                        accountPicker.launch(AccountManager.newChooseAccountIntent(
-                            null, null, arrayOf("com.google"), false,
-                            null, null, null, null))
-                    }.onFailure {
-                        Toast.makeText(context, "حساب گوگل را در تنظیمات گوشی اضافه کن",
-                            Toast.LENGTH_SHORT).show()
-                    }
-                }) { Text(if (googleAccount.isBlank()) "+ افزودن حساب گوگل"
-                    else "✓ حساب گوگل") }
-                if (googleAccount.isNotBlank()) {
-                    TextButton(onClick = { requestGoogleSync() }, enabled = !googleSyncBusy) {
-                        Text(if (googleSyncBusy) "در حال همگام‌سازی..." else "همگام‌سازی")
-                    }
-                }
-            }
             OutlinedTextField(
                 value = search,
                 onValueChange = { search = it },
@@ -2210,121 +2190,27 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                         db.notes(entry.id).any { it.text.contains(search, ignoreCase = true) })
             }
             LazyColumn(
-                Modifier.weight(1f).padding(bottom = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                Modifier.weight(1f).padding(bottom = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(5.dp)
             ) {
-                filtered.sortedWith(compareBy<ContactEntry> { it.category }.thenBy { it.company })
-                    .groupBy { it.category.ifBlank { "دسته‌بندی‌نشده" } }
-                    .forEach { (category, categoryMembers) ->
-                    item(key = "category_${category}") {
-                        Text("${category} · ${categoryMembers.size} مخاطب",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(top = 12.dp))
-                    }
-                    categoryMembers.groupBy { it.groupId ?: it.id }.forEach { (groupRootId, members) ->
-                    val groupRoot = allEntries.firstOrNull { it.id == groupRootId } ?: members.first()
-                    val groupTitle = groupRoot.company.ifBlank { groupRoot.name }
-                        .ifBlank { groupRoot.note.lineSequence().firstOrNull().orEmpty().take(48) }
-                        .ifBlank { "پرونده بدون عنوان" }
-                    item(key = "group_${groupRootId}") {
-                        Text(
-                            "${groupTitle} · ${members.size} نفر",
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(top = 12.dp)
-                        )
-                    }
-                    items(members, key = { it.id }) { entry ->
-                        val related = allEntries.filter {
-                            (it.groupId ?: it.id) == groupRootId && it.id != entry.id
-                        }.sortedBy { it.name }
-                        Card(
-                            modifier = Modifier.fillMaxWidth().clickable { open(entry) },
-                            shape = RoundedCornerShape(14.dp)
+                items(filtered.sortedBy { it.name }, key = { it.id }) { entry ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth().clickable { open(entry) },
+                        shape = RoundedCornerShape(10.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color.White)
+                    ) {
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column(
-                                Modifier.padding(14.dp),
-                                verticalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                if (entry.name.isNotBlank()) Text(
-                                    entry.name,
-                                    fontWeight = FontWeight.Bold,
-                                    style = MaterialTheme.typography.titleMedium
-                                ) else if (entry.company.isBlank() && entry.note.isNotBlank()) {
-                                    Text(
-                                        entry.note.lineSequence().firstOrNull().orEmpty().take(64),
-                                        fontWeight = FontWeight.Bold,
-                                        style = MaterialTheme.typography.titleMedium
-                                    )
-                                }
-                                if (entry.company.isNotBlank()) Text(
-                                    entry.company,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    style = MaterialTheme.typography.labelMedium
-                                )
-                                if (entry.phone.isNotBlank()) Text(entry.phone, fontWeight = FontWeight.SemiBold)
-                                if (entry.extraPhones.isNotEmpty()) Text(entry.extraPhones.joinToString(" · "),
-                                    style = MaterialTheme.typography.bodySmall)
-                                if (entry.role.isNotBlank()) Text("سمت: ${entry.role}",
-                                    style = MaterialTheme.typography.labelMedium)
-                                if (entry.note.isNotBlank()) Text(
-                                    entry.note,
-                                    maxLines = 3,
-                                    style = MaterialTheme.typography.bodyMedium
-                                )
-                                if (entry.tags.isNotEmpty()) Text(
-                                    entry.tags.joinToString(" · "),
-                                    color = MaterialTheme.colorScheme.primary,
-                                    style = MaterialTheme.typography.labelMedium
-                                )
-                                if (related.isNotEmpty()) {
-                                    TextButton(onClick = {
-                                        expandedGroups = if (groupRootId in expandedGroups)
-                                            expandedGroups - groupRootId else expandedGroups + groupRootId
-                                    }) {
-                                        Text(
-                                            if (groupRootId in expandedGroups)
-                                                "بستن افراد مرتبط (${related.size}) ▲"
-                                            else "نمایش افراد مرتبط (${related.size}) ▼"
-                                        )
-                                    }
-                                    if (groupRootId in expandedGroups) {
-                                        related.forEach { person ->
-                                            TextButton(
-                                                onClick = { open(person) },
-                                                modifier = Modifier.fillMaxWidth()
-                                            ) {
-                                                Text(
-                                                    "${person.name.ifBlank { "بدون نام" }} · ${person.phone}",
-                                                    modifier = Modifier.fillMaxWidth()
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-                                HorizontalDivider(modifier = Modifier.padding(top = 7.dp, bottom = 3.dp))
-                                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    TextButton(
-                                        onClick = { callNumber(entry.phone) },
-                                        enabled = entry.phone.isNotBlank()
-                                    ) { Text("☎ تماس") }
-                                    TextButton(
-                                        onClick = {
-                                            open(entry)
-                                            goToMessages()
-                                        },
-                                        enabled = entry.phone.isNotBlank()
-                                    ) { Text("✉ پیامک") }
-                                    if (entry.latitude != null && entry.longitude != null) {
-                                        TextButton(onClick = {
-                                            openMap(entry.id, previewOnly = true)
-                                        }) { Text("📍 نقشه") }
-                                    }
-                                    TextButton(onClick = { open(entry) }) { Text("پرونده") }
-                                }
-                            }
+                            Text(entry.name, fontWeight = FontWeight.SemiBold,
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.weight(1f), maxLines = 1)
+                            Text(entry.phone,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.secondary,
+                                maxLines = 1)
                         }
-                    }
                     }
                 }
             }
