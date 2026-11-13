@@ -17,6 +17,29 @@ class PersianVoiceInterpreterTest {
             PersianVoiceInterpreter.mobileNumbers("شماره آقای احمدی ۰۹۱۵۸۱۵۱۲۰۴"))
     }
 
+    @Test fun recoversReversedPhoneOnlyWithExplicitPhoneCue() {
+        assertEquals(listOf("09158151204"),
+            PersianVoiceInterpreter.mobileNumbers("شماره تماس 40215185190"))
+        assertEquals(emptyList<String>(),
+            PersianVoiceInterpreter.mobileNumbers("فاکتور 40215185190"))
+    }
+
+    @Test fun extractsBusinessRoleAndIndustryCategory() {
+        val result = PersianVoiceInterpreter.parse(
+            "آقای حسینی مدیر مجموعه مبلمان لیپاریس است، شماره ۰۹۱۵۸۱۵۱۲۰۴")
+        assertEquals("حسینی", result.person)
+        assertTrue(result.role.orEmpty().contains("مدیر"))
+        assertEquals("مبل‌فروشی", result.category)
+        assertEquals("09158151204", result.phone)
+    }
+
+    @Test fun noDateOrAmPmDoesNotInventMeeting() {
+        val result = PersianVoiceInterpreter.parse(
+            "برای ساعت ۲:۳۰ برای آقای حسینی جلسه بذار", nowEpochMillis = now, timezone = zone)
+        assertNull(result.appointment?.dueAt)
+        assertNotNull(result.appointment?.warning)
+    }
+
     @Test fun recognizesSpokenDigitByDigitMobileNumber() {
         assertEquals(listOf("09158151204"),
             PersianVoiceInterpreter.mobileNumbers(
