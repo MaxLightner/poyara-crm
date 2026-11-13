@@ -156,6 +156,12 @@ private fun CrmHome(initialRecordId: Long) {
     var recordingStartedAt by remember { mutableLongStateOf(0L) }
     var recordingClock by remember { mutableLongStateOf(0L) }
     var recordingError by remember { mutableStateOf("") }
+    // Default to Google's built-in live microphone recognizer. Text is hidden
+    // throughout dictation and only appears when Stop is tapped.
+    var googleVoiceMode by rememberSaveable { mutableStateOf(true) }
+    var googleVoiceBusy by remember { mutableStateOf(false) }
+    var googleVoiceStage by remember { mutableStateOf("") }
+    var googleSession by remember { mutableStateOf<GoogleDictationSession?>(null) }
     var pendingAutoTranscriptions by remember { mutableStateOf<List<String>>(emptyList()) }
     LaunchedEffect(isRecording) {
         while (isRecording) {
@@ -272,6 +278,25 @@ private fun CrmHome(initialRecordId: Long) {
         return id
     }
 
+    // This single text box is the user's source of truth. Simple local
+    // recognition can annotate it but must not remove or replace spoken words.
+    fun addSpeechToCapture(transcript: String) {
+        if (transcript.isBlank()) return
+        val facts = VoiceLocalFacts.extract(transcript)
+        val section = VoiceLocalFacts.formatForCapture(transcript)
+        val combined = if (note.contains(transcript.trim())) note else
+            listOf(note.trim(), section).filter { it.isNotBlank() }.joinToString("\n\n")
+        val resolvedName = personName.ifBlank { facts.personName }
+        val resolvedCompany = companyName.ifBlank { facts.company }
+        val resolvedPhone = phone.ifBlank { facts.phone }
+        personName = resolvedName
+        companyName = resolvedCompany
+        phone = resolvedPhone
+        note = combined
+        save(newName = resolvedName, newPhone = resolvedPhone,
+            newCompany = resolvedCompany, newNote = combined)
+    }
+
     fun ensureRecord(): Long {
         if (recordId == 0L) {
             if (note.isBlank() && personName.isBlank() && companyName.isBlank() && phone.isBlank()) {
@@ -345,6 +370,47 @@ private fun CrmHome(initialRecordId: Long) {
         if (!openDialer(context, value)) {
             Toast.makeText(context, "برنامه شماره‌گیر پیدا نشد", Toast.LENGTH_SHORT).show()
         }
+    }
+
+    fun beginGoogleDictation() {
+        if (isRecording || googleVoiceBusy) return
+        recordingError = ""
+        googleVoiceBusy = true
+        googleVoiceStage = "در حال فعال‌کردن سرویس گفتار گوگل..."
+        val session = GoogleDictationSession(
+            context.applicationContext,
+            onStage = { googleVoiceStage = it },
+            onFinished = { text, error ->
+                googleSession = null
+                googleVoiceBusy = false
+                googleVoiceStage = ""
+                isRecording = false
+                if (text.isNullOrBlank()) {
+                    recordingError = error ?: "سرویس گفتار گوشی متنی برنگرداند."
+                } else {
+                    addSpeechToCapture(text)
+                    Toast.makeText(context, "متن گفتار به کادر بالا اضافه شد", Toast.LENGTH_SHORT).show()
+                }
+            }
+        )
+        googleSession = session
+        if (session.start()) {
+            isRecording = true
+            googleVoiceBusy = false
+            recordingStartedAt = SystemClock.elapsedRealtime()
+            recordingClock = recordingStartedAt
+        } else {
+            googleSession = null
+            googleVoiceBusy = false
+        }
+    }
+
+    fun stopGoogleDictation() {
+        if (!isRecording || googleVoiceBusy) return
+        isRecording = false
+        googleVoiceBusy = true
+        googleVoiceStage = "پایان گفتار؛ در حال دریافت متن نهایی..."
+        googleSession?.stop()
     }
 
     fun beginRecording() {
@@ -436,7 +502,9 @@ private fun CrmHome(initialRecordId: Long) {
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { allowed ->
-        if (allowed) beginRecording()
+        if (allowed) {
+            if (googleVoiceMode) beginGoogleDictation() else beginRecording()
+        }
         else {
             recordingError = "برای ضبط صدا، مجوز میکروفون را در تنظیمات گوشی فعال کن."
             Toast.makeText(context, recordingError, Toast.LENGTH_LONG).show()
@@ -639,10 +707,15 @@ private fun CrmHome(initialRecordId: Long) {
         val saved = allEntries.firstOrNull { it.id == entryId }
         val lat = saved?.latitude ?: draftLatitude
         val lon = saved?.longitude ?: draftLongitude
+        val locationName = saved?.company?.ifBlank { VoiceLocalFacts.extract(saved.note).company }
+            ?.ifBlank { saved.name }?.ifBlank { null }
+            ?: companyName.ifBlank { VoiceLocalFacts.extract(note).company }
+                .ifBlank { personName }.ifBlank { "موقعیت مجموعه" }
         val target = Intent(context, OfflineMapActivity::class.java)
             .putExtra("entry_id", entryId)
             .putExtra("allow_pick_location", allowPick)
             .putExtra("preview_only", previewOnly)
+            .putExtra("preview_label", locationName)
         if (lat != null && lon != null) {
             target.putExtra("preview_latitude", lat)
             target.putExtra("preview_longitude", lon)
@@ -823,11 +896,21 @@ private fun CrmHome(initialRecordId: Long) {
                         )
                         val showLatitude = current?.latitude ?: draftLatitude
                         val showLongitude = current?.longitude ?: draftLongitude
+                        val locationName = companyName
+                            .ifBlank { VoiceLocalFacts.extract(note).company }
+                            .ifBlank { current?.company.orEmpty() }
+                            .ifBlank { personName }
+                            .ifBlank { "موقعیت مجموعه" }
                         if (showLatitude != null && showLongitude != null) {
+                            Text(
+                                "نام مکان: " + locationName,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF08685F)
+                            )
                             ContactMapPreview(
                                 latitude = showLatitude,
                                 longitude = showLongitude,
-                                title = personName.ifBlank { companyName.ifBlank { "موقعیت مشتری" } }
+                                title = locationName
                             )
                             Text(
                                 if (current?.latitude != null) "پیش‌نمایش موقعیت ذخیره‌شده"
@@ -856,25 +939,7 @@ private fun CrmHome(initialRecordId: Long) {
                             val parts = encoded.split("|", limit = 2)
                             if (parts.size == 2 && parts[0] == "audio") parts[1] else null
                         },
-                    onTranscribed = { transcript ->
-                        // Full speech and conservative local extraction go into the
-                        // SAME large textbox. Hidden legacy metadata is optional
-                        // and is only updated if a single unique fact is recognized.
-                        val facts = VoiceLocalFacts.extract(transcript)
-                        val section = VoiceLocalFacts.formatForCapture(transcript)
-                        val combined = if (note.contains(transcript.trim())) note else
-                            listOf(note.trim(), section).filter { it.isNotBlank() }
-                                .joinToString("\n\n")
-                        val resolvedName = personName.ifBlank { facts.personName }
-                        val resolvedCompany = companyName.ifBlank { facts.company }
-                        val resolvedPhone = phone.ifBlank { facts.phone }
-                        personName = resolvedName
-                        companyName = resolvedCompany
-                        phone = resolvedPhone
-                        note = combined
-                        save(newName = resolvedName, newPhone = resolvedPhone,
-                            newCompany = resolvedCompany, newNote = combined)
-                    }
+                    onTranscribed = { transcript -> addSpeechToCapture(transcript) }
                 )
 
                 if (files.isNotEmpty()) {
