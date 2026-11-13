@@ -133,6 +133,9 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
     var agentPairingToken by remember { mutableStateOf("") }
     var agentBusy by remember { mutableStateOf(false) }
     var pendingVoiceTranscript by rememberSaveable { mutableStateOf("") }
+    var agentClarificationQuestion by rememberSaveable { mutableStateOf("") }
+    var agentClarificationAnswer by rememberSaveable { mutableStateOf("") }
+    var agentLastInstruction by rememberSaveable { mutableStateOf("") }
     var pendingVoiceFilePath by rememberSaveable { mutableStateOf("") }
     var voiceTranscribing by remember { mutableStateOf(false) }
     var voiceFileReader by remember { mutableStateOf<VoiceFileTranscriber?>(null) }
@@ -788,12 +791,24 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                             save(newNote = note)
                             notes += "متن گفتار و غلط‌های نگارشی اصلاح شد."
                         }
-                        pendingVoiceTranscript = ""
                         pendingVoiceFilePath = ""
                         val questions = json.optJSONArray("questions")
-                        if (questions != null) for (i in 0 until questions.length()) {
-                            questions.optString(i).takeIf { it.isNotBlank() }
-                                ?.let { notes += "سؤال Agent: " + it.take(240) }
+                        val firstQuestion = (0 until (questions?.length() ?: 0))
+                            .mapNotNull { index -> questions?.optString(index)
+                                ?.trim()?.takeIf { it.isNotBlank() } }
+                            .firstOrNull().orEmpty()
+                        if (firstQuestion.isNotBlank()) {
+                            // Keep original instruction so the next answer can resolve
+                            // an ambiguous day/time without repeating the whole voice note.
+                            agentClarificationQuestion = firstQuestion.take(240)
+                            agentLastInstruction = transcript.take(10000)
+                            pendingVoiceTranscript = transcript.take(10000)
+                            notes += "سؤال Agent: " + agentClarificationQuestion
+                        } else {
+                            agentClarificationQuestion = ""
+                            agentClarificationAnswer = ""
+                            agentLastInstruction = ""
+                            pendingVoiceTranscript = ""
                         }
                         agentMessages = notes.distinct().ifEmpty { listOf("Agent دستور جدیدی تشخیص نداد.") }
                         refresh()
@@ -864,6 +879,11 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
         contactRole = ""
         contactCategory = ""
         note = ""
+        agentClarificationQuestion = ""
+        agentClarificationAnswer = ""
+        agentLastInstruction = ""
+        pendingVoiceTranscript = ""
+        pendingVoiceFilePath = ""
         lastVoiceActions = emptyList()
         chosenTags = emptySet()
         additionalNotes = emptyList()
@@ -1735,6 +1755,37 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                     }
                     OutlinedButton(onClick = { addCategoryDialog = true }) {
                         Text("+ گروه جدید")
+                    }
+                }
+                if (agentClarificationQuestion.isNotBlank()) {
+                    Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF9ED))) {
+                        Column(Modifier.fillMaxWidth().padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                            Text("سؤال تکمیلی Agent", fontWeight = FontWeight.SemiBold)
+                            Text(agentClarificationQuestion,
+                                style = MaterialTheme.typography.bodyMedium)
+                            OutlinedTextField(
+                                value = agentClarificationAnswer,
+                                onValueChange = { agentClarificationAnswer = it },
+                                label = { Text("پاسخ کوتاه؛ مثلاً فردا ساعت ۳ عصر") },
+                                maxLines = 2,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Button(
+                                enabled = agentClarificationAnswer.isNotBlank() && !agentBusy,
+                                onClick = {
+                                    val previous = agentLastInstruction.ifBlank {
+                                        pendingVoiceTranscript.ifBlank { note }
+                                    }
+                                    val combined = previous + "\nپاسخ به سؤال «" +
+                                        agentClarificationQuestion + "»: " +
+                                        agentClarificationAnswer.trim()
+                                    agentClarificationQuestion = ""
+                                    agentClarificationAnswer = ""
+                                    addSpeechToCapture(combined.takeLast(10000))
+                                }
+                            ) { Text("تکمیل دستور و ثبت") }
+                        }
                     }
                 }
                 if (recordId > 0L && (contactRole.isBlank() || contactCategory.isBlank()) &&
