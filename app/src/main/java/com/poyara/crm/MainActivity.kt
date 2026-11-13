@@ -1174,6 +1174,21 @@ private fun CrmHome(initialRecordId: Long) {
                 Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                if (allEntries.isEmpty() && recordId == 0L) {
+                    Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFF1F5F5))) {
+                        Row(Modifier.fillMaxWidth().padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("انتقال از پویارای قبلی",
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.weight(1f))
+                            TextButton(onClick = {
+                                importLauncher.launch(arrayOf(
+                                    "application/zip", "application/octet-stream"))
+                            }) { Text("بازیابی اطلاعات قبلی") }
+                        }
+                    }
+                }
                 Row(
                     Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
