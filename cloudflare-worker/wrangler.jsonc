@@ -1,0 +1,8 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "poyara-crm-agent",
+  "main": "src/index.js",
+  "compatibility_date": "2026-11-14",
+  "workers_dev": true,
+  "ai": { "binding": "AI" }
+}
