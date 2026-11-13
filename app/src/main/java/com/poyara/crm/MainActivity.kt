@@ -890,7 +890,9 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
         showExtraPhones = extraPhones.isNotEmpty()
         contactRole = entry.role
         contactCategory = entry.category
-        note = entry.note
+        note = entry.note.takeUnless {
+            it.trim() == "صدای ضبط‌شده آماده پردازش است؛ متن اولیه تشخیص داده نشد."
+        }.orEmpty()
         lastVoiceActions = emptyList()
         chosenTags = entry.tags
         draftLatitude = entry.latitude
@@ -1542,13 +1544,34 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                 }
                 Text("مجوزهای سیستم و اتصال‌ها اینجا مدیریت می‌شوند.",
                     style = MaterialTheme.typography.bodySmall)
+                val unfinished = allEntries.filterNot {
+                    ContactReadiness.isComplete(it.name, it.phone)
+                }
+                if (unfinished.isNotEmpty()) {
+                    var showLegacyDrafts by remember { mutableStateOf(false) }
+                    Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                        Column(Modifier.fillMaxWidth().padding(10.dp)) {
+                            TextButton(onClick = { showLegacyDrafts = !showLegacyDrafts }) {
+                                Text("پیش‌نویس‌های نسخه‌های قبلی (${unfinished.size}) " +
+                                    if (showLegacyDrafts) "▲" else "▼")
+                            }
+                            if (showLegacyDrafts) unfinished.take(20).forEach { old ->
+                                TextButton(onClick = { open(old) }) {
+                                    Text((old.name.ifBlank { old.company }
+                                        .ifBlank { "یادداشت/صدای ناتمام" }).take(55) +
+                                        " · تکمیل مخاطب")
+                                }
+                            }
+                        }
+                    }
+                }
                 Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
                     Column(Modifier.fillMaxWidth().padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("Agent رایگان · Gemini Flash-Lite", fontWeight = FontWeight.SemiBold)
-                        Text("مدل رایگان گوگل از طریق سرور خصوصی شما فراخوانی می‌شود. فقط متن همان ویس و نام/مجموعه همین پرونده ارسال می‌شود؛ سایر مخاطبین گوشی فرستاده نمی‌شوند. بدون اتصال، موتور محلی همچنان کار می‌کند.",
+                        Text("برای استفاده شخصی، Gemini مستقیماً با کلید پروژه Google AI Studio فعال می‌شود؛ سرور واسط لازم نیست. حساب Google Contacts به‌تنهایی کلید Gemini ایجاد نمی‌کند.",
                             style = MaterialTheme.typography.bodySmall)
-                        Text("توجه: در سهمیه رایگان Gemini، گوگل ممکن است متن ارسالی را برای بهبود محصولاتش استفاده کند؛ اطلاعات مشتری را فقط با رضایت و آگاهی ارسال کن. سهمیه رایگان محدود است؛ خود سرور ممکن است هزینه داشته باشد.",
+                        Text("سهمیه رایگان، دسترسی منطقه‌ای و شرایط استفاده تابع قوانین گوگل است. Gemini API در ایران در فهرست مناطق رسمی پشتیبانی‌شده نیست؛ صرف ورود به Gmail این محدودیت را برطرف نمی‌کند.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error)
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1571,6 +1594,15 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                         else "یک‌بار کلید رایگان Gemini را از Google AI Studio وارد کن",
                             style = MaterialTheme.typography.bodySmall)
                         if (!directGeminiSettings.configured) {
+                            TextButton(onClick = {
+                                runCatching {
+                                    context.startActivity(Intent(Intent.ACTION_VIEW,
+                                        Uri.parse("https://aistudio.google.com/api-keys")))
+                                }.onFailure {
+                                    Toast.makeText(context, "صفحه Google AI Studio باز نشد",
+                                        Toast.LENGTH_SHORT).show()
+                                }
+                            }) { Text("دریافت کلید Gemini از Google AI Studio") }
                             OutlinedTextField(
                                 value = directGeminiKey,
                                 onValueChange = { directGeminiKey = it },
