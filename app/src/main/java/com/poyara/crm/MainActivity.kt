@@ -198,6 +198,7 @@ private fun CrmHome(initialRecordId: Long) {
     val backup = remember { CrmBackup(context.applicationContext, db) }
     var smsBody by rememberSaveable { mutableStateOf(startupEntry?.let { db.smsDraft(it.id) } ?: "") }
     var callerEnabled by remember { mutableStateOf(false) }
+    var dialerEnabled by remember { mutableStateOf(false) }
     val roleManager = remember {
         if (Build.VERSION.SDK_INT >= 29) context.getSystemService(RoleManager::class.java) else null
     }
@@ -208,6 +209,9 @@ private fun CrmHome(initialRecordId: Long) {
         // Voice files and all CRM records are retained.
         androidx.work.WorkManager.getInstance(context)
             .cancelAllWorkByTag("poyara_voice_upload")
+        dialerEnabled = if (Build.VERSION.SDK_INT >= 29) {
+            roleManager?.isRoleHeld(RoleManager.ROLE_DIALER) == true
+        } else false
         callerEnabled = if (Build.VERSION.SDK_INT >= 29) {
             roleManager?.isRoleHeld(RoleManager.ROLE_CALL_SCREENING) == true
         } else false
@@ -877,6 +881,21 @@ private fun CrmHome(initialRecordId: Long) {
         }
     }
 
+    val dialerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        dialerEnabled = Build.VERSION.SDK_INT >= 29 &&
+            roleManager?.isRoleHeld(RoleManager.ROLE_DIALER) == true
+    }
+
+    fun requestDialerRole() {
+        if (Build.VERSION.SDK_INT >= 29 &&
+            roleManager?.isRoleAvailable(RoleManager.ROLE_DIALER) == true) {
+            dialerLauncher.launch(roleManager.createRequestRoleIntent(RoleManager.ROLE_DIALER))
+        } else Toast.makeText(context, "انتخاب برنامه تلفن در این گوشی پشتیبانی نشد",
+            Toast.LENGTH_LONG).show()
+    }
+
     val roleLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) {
@@ -1375,6 +1394,16 @@ private fun CrmHome(initialRecordId: Long) {
                         if (!callerEnabled) {
                             TextButton(onClick = { activateCallerContext() }) {
                                 Text("فعال‌سازی شناسایی تماس")
+                            }
+                        }
+                        HorizontalDivider()
+                        Text("صفحه تماس اختصاصی پویارا", fontWeight = FontWeight.Bold)
+                        Text(if (dialerEnabled) "پویارا برنامه تلفن پیش‌فرض این گوشی است."
+                            else "برای جایگزینی صفحه تماس گوشی، باید پویارا را برنامه تلفن پیش‌فرض انتخاب کنی. این انتخاب بر تمام تماس‌ها اثر می‌گذارد؛ ابتدا روی گوشی آزمایش کن.",
+                            style = MaterialTheme.typography.bodySmall)
+                        if (!dialerEnabled) {
+                            OutlinedButton(onClick = { requestDialerRole() }) {
+                                Text("انتخاب به‌عنوان برنامه تماس پیش‌فرض")
                             }
                         }
                     }
