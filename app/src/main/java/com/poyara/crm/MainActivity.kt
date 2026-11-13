@@ -1394,7 +1394,142 @@ private fun CrmHome(initialRecordId: Long) {
             }
         }
 
-        if (page == "capture") {
+        if (page == "settings") {
+            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+                .padding(bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("تنظیمات پویارا", style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold)
+                Text("مجوزهای سیستم و اتصال‌ها اینجا مدیریت می‌شوند.",
+                    style = MaterialTheme.typography.bodySmall)
+                Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Agent رایگان · Gemini Flash-Lite", fontWeight = FontWeight.SemiBold)
+                        Text("مدل رایگان گوگل از طریق سرور خصوصی شما فراخوانی می‌شود. فقط متن همان ویس و نام/مجموعه همین پرونده ارسال می‌شود؛ سایر مخاطبین گوشی فرستاده نمی‌شوند. بدون اتصال، موتور محلی همچنان کار می‌کند.",
+                            style = MaterialTheme.typography.bodySmall)
+                        Text("توجه: در سهمیه رایگان Gemini، گوگل ممکن است متن ارسالی را برای بهبود محصولاتش استفاده کند؛ اطلاعات مشتری را فقط با رضایت و آگاهی ارسال کن. سهمیه رایگان محدود است؛ خود سرور ممکن است هزینه داشته باشد.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = agentPrivacyConsent,
+                                onCheckedChange = { accepted ->
+                                    agentPrivacyConsent = accepted
+                                    if (!accepted) agentOptIn = false
+                                    agentPrefs.edit()
+                                        .putBoolean("cloud_text_consent_v1", accepted)
+                                        .putBoolean("enabled", if (accepted) agentOptIn else false)
+                                        .apply()
+                                })
+                            Text("با ارسال متن گفتار مشتری برای تحلیل ابری موافقم",
+                                style = MaterialTheme.typography.bodySmall)
+                        }
+                        OutlinedTextField(value = agentUrl, onValueChange = { agentUrl = it },
+                            label = { Text("آدرس HTTPS سرور Agent") },
+                            singleLine = true, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(value = agentPairingToken,
+                            onValueChange = { agentPairingToken = it },
+                            label = { Text("کد اتصال اختصاصی سرور") },
+                            visualTransformation = PasswordVisualTransformation(),
+                            singleLine = true, modifier = Modifier.fillMaxWidth())
+                        Row(verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = {
+                                runCatching {
+                                    require(agentPrivacyConsent) {
+                                        "برای فعال‌سازی Agent، ابتدا اجازه ارسال متن به مدل ابری را تأیید کن."
+                                    }
+                                    textAgentSettings.save(agentUrl, agentPairingToken)
+                                    agentPairingToken = ""
+                                    agentOptIn = true
+                                    agentPrefs.edit().putBoolean("enabled", true).apply()
+                                }.onSuccess {
+                                    Toast.makeText(context, "تنظیمات Agent ذخیره شد", Toast.LENGTH_SHORT).show()
+                                }.onFailure { error ->
+                                    Toast.makeText(context, error.localizedMessage, Toast.LENGTH_LONG).show()
+                                }
+                            }) { Text("ذخیره اتصال") }
+                            Text("فعال", style = MaterialTheme.typography.bodySmall)
+                            Switch(checked = agentOptIn,
+                                enabled = textAgentSettings.configured && agentPrivacyConsent,
+                                onCheckedChange = { value ->
+                                    agentOptIn = value && agentPrivacyConsent
+                                    agentPrefs.edit().putBoolean("enabled", agentOptIn).apply()
+                                })
+                        }
+                        if (agentBusy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        agentMessages.forEach { message ->
+                            Text(message, style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.secondary)
+                        }
+                    }
+                }
+
+                Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFE1F3EF))) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("شناسایی تماس‌های کاری", fontWeight = FontWeight.Bold)
+                        Text(
+                            if (callerEnabled) "فعال است؛ فقط تماس شماره‌های ثبت‌شده در CRM اعلان شناسایی دریافت می‌کنند و با لمس آن کارت تماس پویارا باز می‌شود."
+                            else "برای نمایش نام، عکس، سمت و مجموعه مشتریان ثبت‌شده روی تماس عادی گوشی، شناسایی تماس کاری را فعال کن.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        if (!callerEnabled) {
+                            TextButton(onClick = { activateCallerContext() }) {
+                                Text("فعال‌سازی شناسایی تماس")
+                            }
+                        }
+                        HorizontalDivider()
+                        Text("شماره‌گیر اصلی گوشی تغییر نمی‌کند؛ تماس‌های خارج از پویارا هیچ اعلانی از CRM دریافت نمی‌کنند.",
+                            style = MaterialTheme.typography.bodySmall)
+                        Text("کارت تماس کاری جایگزین دکمه پاسخ و رد تماس اندروید نیست؛ این کنترل‌ها در صفحه تماس معمولی گوشی باقی می‌مانند.",
+                            style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+
+
+                Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("حساب گوگل", fontWeight = FontWeight.Bold)
+                        Text(googleAccount.ifBlank { "حساب انتخاب نشده است" },
+                            style = MaterialTheme.typography.bodySmall)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = {
+                                runCatching {
+                                    accountPicker.launch(AccountManager.newChooseAccountIntent(
+                                        null, null, arrayOf("com.google"), false,
+                                        null, null, null, null))
+                                }
+                            }) { Text("افزودن حساب گوگل") }
+                            if (googleAccount.isNotBlank())
+                                TextButton(onClick = { requestGoogleSync() },
+                                    enabled = !googleSyncBusy) {
+                                    Text(if (googleSyncBusy) "در حال همگام‌سازی" else "همگام‌سازی")
+                                }
+                        }
+                    }
+                }
+                if (Build.VERSION.SDK_INT >= 33) {
+                    OutlinedButton(onClick = {
+                        val manager = context.getSystemService(StatusBarManager::class.java)
+                        manager?.requestAddTileService(
+                            ComponentName(context, QuickCaptureTileService::class.java),
+                            "ثبت مخاطب",
+                            Icon.createWithResource(context, android.R.drawable.ic_menu_add),
+                            context.mainExecutor
+                        ) { }
+                    }) {
+                        Text("افزودن میان‌بر به پنل بالای گوشی")
+                    }
+                } else {
+                    Text(
+                        "میان‌بر ثبت مخاطب را از ویرایش پنل تنظیمات سریع گوشی اضافه کن.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+
+            }
+        } else if (page == "capture") {
             Column(
                 Modifier.fillMaxSize().verticalScroll(rememberScrollState())
                     .padding(bottom = 104.dp),
@@ -1565,152 +1700,6 @@ private fun CrmHome(initialRecordId: Long) {
                         }
                     }
                 }
-                Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
-                    Column(Modifier.fillMaxWidth().padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Agent رایگان · Gemini Flash-Lite", fontWeight = FontWeight.SemiBold)
-                        Text("مدل رایگان گوگل از طریق سرور خصوصی شما فراخوانی می‌شود. فقط متن همان ویس و نام/مجموعه همین پرونده ارسال می‌شود؛ سایر مخاطبین گوشی فرستاده نمی‌شوند. بدون اتصال، موتور محلی همچنان کار می‌کند.",
-                            style = MaterialTheme.typography.bodySmall)
-                        Text("توجه: در سهمیه رایگان Gemini، گوگل ممکن است متن ارسالی را برای بهبود محصولاتش استفاده کند؛ اطلاعات مشتری را فقط با رضایت و آگاهی ارسال کن. سهمیه رایگان محدود است؛ خود سرور ممکن است هزینه داشته باشد.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error)
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(checked = agentPrivacyConsent,
-                                onCheckedChange = { accepted ->
-                                    agentPrivacyConsent = accepted
-                                    if (!accepted) agentOptIn = false
-                                    agentPrefs.edit()
-                                        .putBoolean("cloud_text_consent_v1", accepted)
-                                        .putBoolean("enabled", if (accepted) agentOptIn else false)
-                                        .apply()
-                                })
-                            Text("با ارسال متن گفتار مشتری برای تحلیل ابری موافقم",
-                                style = MaterialTheme.typography.bodySmall)
-                        }
-                        OutlinedTextField(value = agentUrl, onValueChange = { agentUrl = it },
-                            label = { Text("آدرس HTTPS سرور Agent") },
-                            singleLine = true, modifier = Modifier.fillMaxWidth())
-                        OutlinedTextField(value = agentPairingToken,
-                            onValueChange = { agentPairingToken = it },
-                            label = { Text("کد اتصال اختصاصی سرور") },
-                            visualTransformation = PasswordVisualTransformation(),
-                            singleLine = true, modifier = Modifier.fillMaxWidth())
-                        Row(verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(onClick = {
-                                runCatching {
-                                    require(agentPrivacyConsent) {
-                                        "برای فعال‌سازی Agent، ابتدا اجازه ارسال متن به مدل ابری را تأیید کن."
-                                    }
-                                    textAgentSettings.save(agentUrl, agentPairingToken)
-                                    agentPairingToken = ""
-                                    agentOptIn = true
-                                    agentPrefs.edit().putBoolean("enabled", true).apply()
-                                }.onSuccess {
-                                    Toast.makeText(context, "تنظیمات Agent ذخیره شد", Toast.LENGTH_SHORT).show()
-                                }.onFailure { error ->
-                                    Toast.makeText(context, error.localizedMessage, Toast.LENGTH_LONG).show()
-                                }
-                            }) { Text("ذخیره اتصال") }
-                            Text("فعال", style = MaterialTheme.typography.bodySmall)
-                            Switch(checked = agentOptIn,
-                                enabled = textAgentSettings.configured && agentPrivacyConsent,
-                                onCheckedChange = { value ->
-                                    agentOptIn = value && agentPrivacyConsent
-                                    agentPrefs.edit().putBoolean("enabled", agentOptIn).apply()
-                                })
-                        }
-                        if (agentBusy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                        agentMessages.forEach { message ->
-                            Text(message, style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.secondary)
-                        }
-                    }
-                }
-                Card(colors = CardDefaults.cardColors(
-                    containerColor = if (isRecording) Color(0xFFFFF0EC) else Color(0xFFE3F3EF)
-                )) {
-                    Column(Modifier.fillMaxWidth().padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(
-                            if (isRecording) "● در حال صحبت؛ متن تا پایان نمایش داده نمی‌شود"
-                            else if (googleVoiceBusy) "در حال دریافت نتیجه نهایی..."
-                            else "ثبت گفتار مشتری",
-                            fontWeight = FontWeight.Bold,
-                            color = if (isRecording) Color(0xFF9C2929) else Color(0xFF08685F)
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            FilterChip(
-                                selected = googleVoiceMode,
-                                enabled = !isRecording && !googleVoiceBusy,
-                                onClick = { googleVoiceMode = true; recordingError = "" },
-                                label = { Text("گوگل · متن") }
-                            )
-                            FilterChip(
-                                selected = !googleVoiceMode,
-                                enabled = !isRecording && !googleVoiceBusy,
-                                onClick = { googleVoiceMode = false; recordingError = "" },
-                                label = { Text("ضبط فایل صوتی") }
-                            )
-                        }
-                        Text(
-                            if (googleVoiceMode)
-                                "گوگل هنگام صحبت گوش می‌دهد؛ هیچ متن زنده‌ای نمایش داده نمی‌شود. بعد از «پایان»، متن خودکار در کادر اصلی ثبت می‌شود. این حالت فایل صوتی ذخیره نمی‌کند."
-                            else
-                                "فایل صوتی ذخیره می‌شود. تبدیل فایل ذخیره‌شده با سرویس گوگل در بعضی گوشی‌ها پشتیبانی نمی‌شود.",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                        if (isRecording) {
-                            val seconds = ((recordingClock - recordingStartedAt) / 1000L).coerceAtLeast(0L)
-                            Text("%02d:%02d".format(seconds / 60L, seconds % 60L),
-                                style = MaterialTheme.typography.headlineMedium,
-                                fontWeight = FontWeight.Bold)
-                        }
-                        if (googleVoiceBusy) {
-                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                        }
-                        if (googleVoiceStage.isNotBlank() && (googleVoiceMode || googleVoiceBusy)) {
-                            Text(googleVoiceStage, style = MaterialTheme.typography.labelSmall)
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                onClick = {
-                                    if (isRecording) {
-                                        if (googleVoiceMode) stopGoogleDictation()
-                                        else stopRecording()
-                                    } else if (context.checkSelfPermission(
-                                        Manifest.permission.RECORD_AUDIO
-                                    ) == PackageManager.PERMISSION_GRANTED) {
-                                        if (googleVoiceMode) beginGoogleDictation()
-                                        else beginRecording()
-                                    } else {
-                                        recordingError = "درخواست مجوز میکروفون…"
-                                        permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                    }
-                                },
-                                enabled = !googleVoiceBusy,
-                                modifier = Modifier.weight(1f),
-                                colors = if (isRecording) ButtonDefaults.buttonColors(
-                                    containerColor = Color(0xFFB42626)
-                                ) else ButtonDefaults.buttonColors()
-                            ) {
-                                Text(
-                                    if (isRecording) "■ پایان"
-                                    else if (googleVoiceMode) "● شروع گفتار"
-                                    else "● ضبط فایل صوتی"
-                                )
-                            }
-                            OutlinedButton(
-                                onClick = { takePhoto() },
-                                enabled = !isRecording && !googleVoiceBusy
-                            ) { Text("📷 عکس") }
-                        }
-                        if (recordingError.isNotBlank()) {
-                            Text(recordingError, color = MaterialTheme.colorScheme.error,
-                                style = MaterialTheme.typography.bodySmall)
-                        }
-                    }
-                }
                 Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFE3F3EF))) {
                     Column(
                         modifier = Modifier.fillMaxWidth().padding(12.dp),
@@ -1762,19 +1751,6 @@ private fun CrmHome(initialRecordId: Long) {
                         }
                     }
                 }
-
-                VoiceAgentPanel(
-                    autoTranscribePaths = pendingAutoTranscriptions,
-                    onAutoConsumed = { consumed ->
-                        pendingAutoTranscriptions = pendingAutoTranscriptions.filterNot { it == consumed }
-                    },
-                    audioPaths = files.filter { it.type == "audio" }.map { it.filePath } +
-                        draftAttachments.mapNotNull { encoded ->
-                            val parts = encoded.split("|", limit = 2)
-                            if (parts.size == 2 && parts[0] == "audio") parts[1] else null
-                        },
-                    onTranscribed = { transcript -> addSpeechToCapture(transcript) }
-                )
 
                 if (files.isNotEmpty()) {
                     Text("پیوست‌ها (${files.size})", fontWeight = FontWeight.Bold)
@@ -1835,51 +1811,6 @@ private fun CrmHome(initialRecordId: Long) {
                     }
                 }
 
-                Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFE1F3EF))) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text("شناسایی تماس‌های کاری", fontWeight = FontWeight.Bold)
-                        Text(
-                            if (callerEnabled) "فعال است؛ فقط تماس شماره‌های ثبت‌شده در CRM اعلان شناسایی دریافت می‌کنند و با لمس آن کارت تماس پویارا باز می‌شود."
-                            else "برای نمایش نام، عکس، سمت و مجموعه مشتریان ثبت‌شده روی تماس عادی گوشی، شناسایی تماس کاری را فعال کن.",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                        if (!callerEnabled) {
-                            TextButton(onClick = { activateCallerContext() }) {
-                                Text("فعال‌سازی شناسایی تماس")
-                            }
-                        }
-                        HorizontalDivider()
-                        Text("شماره‌گیر اصلی گوشی تغییر نمی‌کند؛ تماس‌های خارج از پویارا هیچ اعلانی از CRM دریافت نمی‌کنند.",
-                            style = MaterialTheme.typography.bodySmall)
-                        Text("کارت تماس کاری جایگزین دکمه پاسخ و رد تماس اندروید نیست؛ این کنترل‌ها در صفحه تماس معمولی گوشی باقی می‌مانند.",
-                            style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-
-                if (Build.VERSION.SDK_INT >= 33) {
-                    OutlinedButton(onClick = {
-                        val manager = context.getSystemService(StatusBarManager::class.java)
-                        manager?.requestAddTileService(
-                            ComponentName(context, QuickCaptureTileService::class.java),
-                            "ثبت مخاطب",
-                            Icon.createWithResource(context, android.R.drawable.ic_menu_add),
-                            context.mainExecutor
-                        ) { }
-                    }) {
-                        Text("افزودن میان‌بر به پنل بالای گوشی")
-                    }
-                } else {
-                    Text(
-                        "میان‌بر ثبت مخاطب را از ویرایش پنل تنظیمات سریع گوشی اضافه کن.",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-
-                Text(
-                    "فایل‌ها و اطلاعات روی همین گوشی نگهداری می‌شوند. پردازش هوش مصنوعی در نسخه بعدی اضافه می‌شود.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.secondary
-                )
                 ReminderComposer(
                     db = db,
                     entryId = recordId,
