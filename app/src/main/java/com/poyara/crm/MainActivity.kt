@@ -1453,7 +1453,7 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                     Triple("capture", "ثبت سریع", "✎"),
                     Triple("list", "مخاطبان", "▦"),
                     Triple("agenda", "برنامه کاری", "▤"),
-                    Triple("messages", "پیامک", "✉")
+                    Triple("settings", "تنظیمات", "⚙")
                 ).forEach { (key, title, symbol) ->
                     NavigationBarItem(
                         selected = page == key,
@@ -1461,7 +1461,7 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                             when (key) {
                                 "list" -> { refresh(); page = key }
                                 "agenda" -> { refresh(); page = key }
-                                "messages" -> goToMessages()
+                                "settings" -> page = key
                                 else -> page = key
                             }
                         },
@@ -1477,10 +1477,12 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Box(Modifier.fillMaxWidth().height(48.dp)) {
-            TextButton(onClick = { page = if (page == "settings") "capture" else "settings" },
-                modifier = Modifier.align(Alignment.CenterStart)) {
-                Text(if (page == "settings") "بازگشت" else "⚙ تنظیمات")
-            }
+            Text(
+                if (page == "settings") "تنظیمات و اتصال‌ها" else "پویارا CRM",
+                modifier = Modifier.align(Alignment.CenterStart),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.secondary
+            )
             if (page == "capture") {
                 Box(
                     Modifier.align(Alignment.CenterEnd)
@@ -2151,7 +2153,10 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                     }
                 }
             }
+            // Legacy note-only records remain in SQLite for recovery, but are
+            // not real contacts and cannot be selected for calls or Google Sync.
             val filtered = allEntries.filter { entry ->
+                ContactReadiness.isComplete(entry.name, entry.phone) &&
                 (filterTag == "همه" || filterTag in entry.tags) &&
                     (filterRole == "همه سمت‌ها" || filterRole == entry.role) &&
                     (filterCategory == "همه گروه‌ها" || filterCategory == entry.category.ifBlank { "دسته‌بندی‌نشده" }) &&
