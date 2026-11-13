@@ -1293,37 +1293,58 @@ private fun CrmHome(initialRecordId: Long) {
     Scaffold(
         containerColor = Color(0xFFF4F7F8),
         floatingActionButton = {
-            val hasAnyInformation = personName.isNotBlank() ||
-                companyName.isNotBlank() || phone.isNotBlank() || note.isNotBlank() ||
-                draftAttachments.isNotEmpty() || draftLatitude != null || recordId > 0L
-            if (page == "capture" && hasAnyInformation) {
-                val canComplete = !isRecording && pendingAutoTranscriptions.isEmpty() &&
-                    (note.isNotBlank() || (personName.isNotBlank() && phone.isNotBlank()))
-                FloatingActionButton(
-                    modifier = Modifier.size(64.dp),
-                    containerColor = if (canComplete) Color(0xFF087866) else Color(0xFFD9E5E3),
-                    contentColor = if (canComplete) Color.White else Color(0xFF526C69),
-                    shape = RoundedCornerShape(18.dp),
-                    onClick = {
-                        if (!canComplete) {
-                            Toast.makeText(
-                                context, if (isRecording || pendingAutoTranscriptions.isNotEmpty())
-                                    "ضبط یا تبدیل صوت هنوز کامل نشده است"
-                                else "برای ثبت، چیزی در کادر اصلی بنویس یا ویس را تبدیل کن",
-                                Toast.LENGTH_SHORT
-                            ).show()
-                        } else if (save() > 0L) {
-                            Toast.makeText(context, "ثبت شد؛ آماده پرونده بعدی", Toast.LENGTH_SHORT).show()
-                            newEntry()
+            if (page == "capture") {
+                val hasInformation = personName.isNotBlank() ||
+                    companyName.isNotBlank() || phone.isNotBlank() || note.isNotBlank() ||
+                    draftAttachments.isNotEmpty() || draftLatitude != null
+                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 6.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.Bottom
+                    ) {
+                        if (hasInformation) {
+                            FloatingActionButton(
+                                modifier = Modifier.size(54.dp),
+                                containerColor = Color(0xFF087866),
+                                contentColor = Color.White,
+                                shape = RoundedCornerShape(16.dp),
+                                onClick = {
+                                    if (isRecording || voiceTranscribing || agentBusy) {
+                                        Toast.makeText(context,
+                                            "ابتدا ضبط یا پردازش را تمام کن",
+                                            Toast.LENGTH_SHORT).show()
+                                    } else if (save() > 0L) {
+                                        Toast.makeText(context,
+                                            "پرونده ذخیره شد", Toast.LENGTH_SHORT).show()
+                                        newEntry()
+                                    }
+                                }
+                            ) { Text("✓", style = MaterialTheme.typography.headlineMedium) }
+                        } else Spacer(Modifier.size(54.dp))
+                        FloatingActionButton(
+                            modifier = Modifier.size(56.dp),
+                            containerColor = Color(0xFFCC3039),
+                            contentColor = Color.White,
+                            shape = RoundedCornerShape(30.dp),
+                            onClick = {
+                                if (isRecording) stopRecording()
+                                else if (!voiceTranscribing &&
+                                    context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
+                                        PackageManager.PERMISSION_GRANTED) beginRecording()
+                                else if (!voiceTranscribing) {
+                                    permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                }
+                            }
+                        ) {
+                            Text(if (isRecording) "■" else "●",
+                                style = MaterialTheme.typography.headlineMedium)
                         }
                     }
-                ) {
-                    Text("✓", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
                 }
             }
         },
-        // Material 3 resolves End to the physical left in the app's RTL layout.
-        floatingActionButtonPosition = FabPosition.End,
+        floatingActionButtonPosition = FabPosition.Center,
         bottomBar = {
             NavigationBar(containerColor = Color.White, tonalElevation = 8.dp) {
                 listOf(
@@ -1353,7 +1374,11 @@ private fun CrmHome(initialRecordId: Long) {
         Modifier.fillMaxSize().padding(insets).padding(horizontal = 16.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Box(Modifier.fillMaxWidth().height(54.dp)) {
+        Box(Modifier.fillMaxWidth().height(48.dp)) {
+            TextButton(onClick = { page = if (page == "settings") "capture" else "settings" },
+                modifier = Modifier.align(Alignment.CenterStart)) {
+                Text(if (page == "settings") "بازگشت" else "⚙ تنظیمات")
+            }
             if (page == "capture") {
                 Box(
                     Modifier.align(Alignment.CenterEnd)
@@ -1371,8 +1396,9 @@ private fun CrmHome(initialRecordId: Long) {
 
         if (page == "capture") {
             Column(
-                Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+                    .padding(bottom = 104.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 if (allEntries.isEmpty() && recordId == 0L) {
                     Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFF1F5F5))) {
@@ -1447,38 +1473,85 @@ private fun CrmHome(initialRecordId: Long) {
                     placeholder = {
                         Text("هرچه می‌دانی بنویس یا با ضبط صوت بگو؛ نام‌ها، شماره‌ها، آدرس، جلسه‌ها و پیگیری‌ها...")
                     },
-                    minLines = 11,
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 260.dp)
+                    minLines = 3,
+                    maxLines = 6,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 112.dp, max = 220.dp)
                 )
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = contactRole,
-                        onValueChange = { contactRole = it; save() },
-                        label = { Text("سمت شخص") }, singleLine = true,
-                        modifier = Modifier.weight(1f)
-                    )
-                    OutlinedTextField(
-                        value = contactCategory,
-                        onValueChange = { contactCategory = it; save() },
-                        label = { Text("گروه فعالیت") }, singleLine = true,
-                        modifier = Modifier.weight(1f)
-                    )
+                if (companyName.isNotBlank()) {
+                    Text("مجموعه: " + companyName,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary)
                 }
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    categoryChoices.forEach { category ->
-                        FilterChip(
-                            selected = contactCategory == category,
-                            onClick = { contactCategory = category; save() },
-                            label = { Text(category) }
+                TextButton(onClick = { showExtraDetails = !showExtraDetails }) {
+                    Text(if (showExtraDetails) "بستن اطلاعات تکمیلی ▲"
+                        else "سمت، گروه و جزئیات بیشتر ▼")
+                }
+                if (showExtraDetails) {
+                    Row(Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = contactRole,
+                            onValueChange = { contactRole = it; save() },
+                            label = { Text("سمت شخص") }, singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                        OutlinedTextField(
+                            value = contactCategory,
+                            onValueChange = { contactCategory = it; save() },
+                            label = { Text("گروه فعالیت") }, singleLine = true,
+                            modifier = Modifier.weight(1f)
                         )
                     }
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        (categoryChoices + customCategories).distinct().forEach { category ->
+                            FilterChip(
+                                selected = contactCategory == category,
+                                onClick = { contactCategory = category; save() },
+                                label = { Text(category) }
+                            )
+                        }
+                    }
+                    OutlinedButton(onClick = { addCategoryDialog = true }) {
+                        Text("+ گروه جدید")
+                    }
                 }
-                Text(
-                    "این کادر خودکار ذخیره می‌شود؛ متن ویس و اطلاعات قابل تشخیص هم به همین‌جا اضافه می‌شود.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.secondary
-                )
+                if (recordId > 0L && (contactRole.isBlank() || contactCategory.isBlank()) &&
+                    db.callEvents(recordId).isNotEmpty()) {
+                    AssistChip(
+                        onClick = { showExtraDetails = true },
+                        label = { Text("اطلاعات این مشتری ناقص است؛ تکمیل سمت و گروه") }
+                    )
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                    Button(
+                        onClick = {
+                            val transcript = pendingVoiceTranscript.ifBlank { note.trim() }
+                            if (transcript.isNotBlank() || pendingVoiceFilePath.isNotBlank()) {
+                                addSpeechToCapture(transcript)
+                            }
+                        },
+                        enabled = !agentBusy && !isRecording && !voiceTranscribing &&
+                            (note.isNotBlank() || pendingVoiceFilePath.isNotBlank()),
+                        modifier = Modifier.weight(1f)
+                    ) { Text(if (agentBusy) "در حال پردازش..." else "✦ پردازش با هوش مصنوعی") }
+                    OutlinedButton(onClick = { takePhoto() }) { Text("▣") }
+                }
+                if (isRecording || voiceTranscribing || googleVoiceBusy) {
+                    Text(if (isRecording) "● ضبط صدا فعال است؛ دایره قرمز را برای پایان بزن"
+                        else googleVoiceStage.ifBlank { "در حال تبدیل گفتار به متن..." },
+                        color = Color(0xFFB72D35), style = MaterialTheme.typography.bodySmall)
+                }
+                if (recordingError.isNotBlank()) {
+                    Text(recordingError, color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall)
+                }
+                if (!textAgentSettings.configured && agentMessages.isNotEmpty()) {
+                    Text("Gemini هنوز از بخش تنظیمات متصل نشده است؛ فقط پردازش محلی قابل استفاده است.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.secondary)
+                }
                 if (lastVoiceActions.isNotEmpty()) {
                     Card(colors = CardDefaults.cardColors(
                         containerColor = Color(0xFFE3F3EF)
