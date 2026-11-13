@@ -992,6 +992,54 @@ private fun CrmHome(initialRecordId: Long) {
                 Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                Row(
+                    Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = personName,
+                        onValueChange = { personName = it; save(newName = it) },
+                        label = { Text("نام") }, singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedTextField(
+                        value = phone,
+                        onValueChange = { phone = it; save(newPhone = it) },
+                        label = { Text("شماره تماس") }, singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                        modifier = Modifier.weight(1.2f)
+                    )
+                    TextButton(
+                        onClick = {
+                            extraPhones = extraPhones + ""
+                            showExtraPhones = true
+                        },
+                        contentPadding = PaddingValues(0.dp),
+                        modifier = Modifier.width(27.dp)
+                    ) { Text("+", style = MaterialTheme.typography.titleLarge) }
+                }
+                if (showExtraPhones) {
+                    extraPhones.forEachIndexed { index, number ->
+                        Row(verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            OutlinedTextField(
+                                value = number,
+                                onValueChange = { value ->
+                                    extraPhones = extraPhones.toMutableList().also { it[index] = value }
+                                    save()
+                                },
+                                label = { Text("شماره اضافه ${index + 1}") },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                                modifier = Modifier.weight(1f)
+                            )
+                            TextButton(onClick = {
+                                extraPhones = extraPhones.filterIndexed { i, _ -> i != index }
+                                save()
+                            }) { Text("×") }
+                        }
+                    }
+                }
                 OutlinedTextField(
                     value = note,
                     onValueChange = {
@@ -1005,6 +1053,30 @@ private fun CrmHome(initialRecordId: Long) {
                     minLines = 11,
                     modifier = Modifier.fillMaxWidth().heightIn(min = 260.dp)
                 )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = contactRole,
+                        onValueChange = { contactRole = it; save() },
+                        label = { Text("سمت شخص") }, singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedTextField(
+                        value = contactCategory,
+                        onValueChange = { contactCategory = it; save() },
+                        label = { Text("گروه فعالیت") }, singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    categoryChoices.forEach { category ->
+                        FilterChip(
+                            selected = contactCategory == category,
+                            onClick = { contactCategory = category; save() },
+                            label = { Text(category) }
+                        )
+                    }
+                }
                 Text(
                     "این کادر خودکار ذخیره می‌شود؛ متن ویس و اطلاعات قابل تشخیص هم به همین‌جا اضافه می‌شود.",
                     style = MaterialTheme.typography.bodySmall,
@@ -1369,14 +1441,7 @@ private fun CrmHome(initialRecordId: Long) {
                 onClick = { openMap(0L) },
                 modifier = Modifier.fillMaxWidth()
             ) { Text("⌖ نقشه مشتریان و افراد اطراف من") }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = {
-                    exportLauncher.launch("poyara-backup.zip")
-                }) { Text("پشتیبان ZIP") }
-                OutlinedButton(onClick = {
-                    importLauncher.launch(arrayOf("application/zip", "application/octet-stream"))
-                }) { Text("بازیابی پشتیبان") }
-            }
+            // Backup data support is retained for migration, but controls are hidden from contacts.
             OutlinedTextField(
                 value = search,
                 onValueChange = { search = it },
@@ -1396,8 +1461,24 @@ private fun CrmHome(initialRecordId: Long) {
                     )
                 }
             }
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                (listOf("همه گروه‌ها") + allEntries.map { it.category.ifBlank { "دسته‌بندی‌نشده" } }.distinct().sorted()).forEach { category ->
+                    FilterChip(selected = filterCategory == category,
+                        onClick = { filterCategory = category }, label = { Text(category) })
+                }
+            }
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                (listOf("همه سمت‌ها") + allEntries.mapNotNull { it.role.takeIf(String::isNotBlank) }.distinct().sorted()).forEach { role ->
+                    FilterChip(selected = filterRole == role,
+                        onClick = { filterRole = role }, label = { Text(role) })
+                }
+            }
             val filtered = allEntries.filter { entry ->
                 (filterTag == "همه" || filterTag in entry.tags) &&
+                    (filterRole == "همه سمت‌ها" || filterRole == entry.role) &&
+                    (filterCategory == "همه گروه‌ها" || filterCategory == entry.category.ifBlank { "دسته‌بندی‌نشده" }) &&
                     (search.isBlank() || listOf(entry.name, entry.phone, entry.note, entry.company, entry.tags.joinToString())
                         .any { it.contains(search, ignoreCase = true) } ||
                         db.notes(entry.id).any { it.text.contains(search, ignoreCase = true) })
@@ -1406,7 +1487,16 @@ private fun CrmHome(initialRecordId: Long) {
                 Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                filtered.groupBy { it.groupId ?: it.id }.forEach { (groupRootId, members) ->
+                filtered.sortedWith(compareBy<ContactEntry> { it.category }.thenBy { it.company })
+                    .groupBy { it.category.ifBlank { "دسته‌بندی‌نشده" } }
+                    .forEach { (category, categoryMembers) ->
+                    item(key = "category_${category}") {
+                        Text("${category} · ${categoryMembers.size} مخاطب",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(top = 12.dp))
+                    }
+                    categoryMembers.groupBy { it.groupId ?: it.id }.forEach { (groupRootId, members) ->
                     val groupRoot = allEntries.firstOrNull { it.id == groupRootId } ?: members.first()
                     val groupTitle = groupRoot.company.ifBlank { groupRoot.name }
                         .ifBlank { groupRoot.note.lineSequence().firstOrNull().orEmpty().take(48) }
@@ -1447,6 +1537,10 @@ private fun CrmHome(initialRecordId: Long) {
                                     style = MaterialTheme.typography.labelMedium
                                 )
                                 if (entry.phone.isNotBlank()) Text(entry.phone, fontWeight = FontWeight.SemiBold)
+                                if (entry.extraPhones.isNotEmpty()) Text(entry.extraPhones.joinToString(" · "),
+                                    style = MaterialTheme.typography.bodySmall)
+                                if (entry.role.isNotBlank()) Text("سمت: ${entry.role}",
+                                    style = MaterialTheme.typography.labelMedium)
                                 if (entry.note.isNotBlank()) Text(
                                     entry.note,
                                     maxLines = 3,
@@ -1504,6 +1598,7 @@ private fun CrmHome(initialRecordId: Long) {
                                 }
                             }
                         }
+                    }
                     }
                 }
             }
