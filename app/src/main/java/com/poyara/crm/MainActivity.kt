@@ -93,7 +93,8 @@ class MainActivity : ComponentActivity() {
                 )
             ) {
                 CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
-                    CrmHome(intent?.getLongExtra("record_id", 0L) ?: 0L)
+                    CrmHome(intent?.getLongExtra("record_id", 0L) ?: 0L,
+                        intent?.getBooleanExtra("complete_profile", false) == true)
                 }
             }
         }
@@ -108,7 +109,7 @@ private fun inferredTags(text: String): Set<String> = buildSet {
 }
 
 @Composable
-private fun CrmHome(initialRecordId: Long) {
+private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
     val context = LocalContext.current
     val db = remember { CrmDb(context.applicationContext) }
     val coroutineScope = rememberCoroutineScope()
@@ -135,7 +136,7 @@ private fun CrmHome(initialRecordId: Long) {
     var pendingVoiceFilePath by rememberSaveable { mutableStateOf("") }
     var voiceTranscribing by remember { mutableStateOf(false) }
     var voiceFileReader by remember { mutableStateOf<VoiceFileTranscriber?>(null) }
-    var showExtraDetails by rememberSaveable { mutableStateOf(false) }
+    var showExtraDetails by rememberSaveable { mutableStateOf(expandIncompleteProfile) }
     var showMapDetails by rememberSaveable { mutableStateOf(false) }
     var showReminderDetails by rememberSaveable { mutableStateOf(false) }
     var showAttachments by rememberSaveable { mutableStateOf(false) }
