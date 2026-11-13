@@ -202,7 +202,10 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
     var contactCategory by rememberSaveable { mutableStateOf(startupEntry?.category ?: draftPrefs.getString("category", "").orEmpty()) }
     var showExtraPhones by remember { mutableStateOf(extraPhones.isNotEmpty()) }
     var note by rememberSaveable {
-        mutableStateOf(startupEntry?.note ?: if (initialRecordId == 0L) draftPrefs.getString("note", "").orEmpty() else "")
+        mutableStateOf((startupEntry?.note ?: if (initialRecordId == 0L)
+            draftPrefs.getString("note", "").orEmpty() else "")
+            .takeUnless { it.trim() == "صدای ضبط‌شده آماده پردازش است؛ متن اولیه تشخیص داده نشد." }
+            .orEmpty())
     }
     var chosenTags by remember {
         mutableStateOf(startupEntry?.tags ?: if (initialRecordId == 0L)
@@ -334,8 +337,9 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
         newGroupId: Long = selectedGroupId
     ): Long {
         val tags = newTags + inferredTags(newNote)
-        if (recordId == 0L && newNote.isBlank() && newName.isBlank() &&
-            newCompany.isBlank() && newPhone.isBlank()) {
+        // Unfinished forms and failed recognition belong to draft preferences,
+        // not the contacts directory. Audio attachments remain in local storage.
+        if (recordId == 0L && !ContactReadiness.isComplete(newName, newPhone)) {
             persistDraft(newName, newPhone, newNote, tags, newCompany, newGroupId)
             return 0L
         }
@@ -833,8 +837,10 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
 
     fun ensureRecord(): Long {
         if (recordId == 0L) {
-            if (note.isBlank() && personName.isBlank() && companyName.isBlank() && phone.isBlank()) {
-                Toast.makeText(context, "ابتدا چیزی در کادر اصلی بنویس یا ضبط کن", Toast.LENGTH_SHORT).show()
+            if (!ContactReadiness.isComplete(personName, phone)) {
+                Toast.makeText(context,
+                    "پیش‌نویس ذخیره شده است؛ برای ایجاد مخاطب نام و شماره معتبر وارد کن",
+                    Toast.LENGTH_LONG).show()
                 return 0L
             }
             val tags = chosenTags + inferredTags(note)
@@ -1064,9 +1070,13 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                     voiceFileReader = null
                     if (!text.isNullOrBlank()) appendRawSpeech(text)
                     else {
-                        val placeholder = "صدای ضبط‌شده آماده پردازش است؛ متن اولیه تشخیص داده نشد."
-                        if (note.isBlank()) { note = placeholder; save(newNote = placeholder) }
-                        agentMessages = listOf(error ?: placeholder)
+                        // A recognizer rejecting prerecorded M4A is a status,
+                        // NEVER a customer note or customer name.
+                        agentMessages = listOf(
+                            "فایل صوتی محفوظ است ولی تشخیص متن توسط گوشی انجام نشد. " +
+                            "اگر Gemini فعال است «پردازش» را بزن، یا از حالت گفتار زنده استفاده کن.",
+                            error.orEmpty()
+                        ).filter { it.isNotBlank() }
                     }
                 })
         } catch (error: Exception) {
@@ -1406,6 +1416,10 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                                         Toast.makeText(context,
                                             "پرونده ذخیره شد", Toast.LENGTH_SHORT).show()
                                         newEntry()
+                                    } else {
+                                        Toast.makeText(context,
+                                            "پیش‌نویس محفوظ است؛ نام و شماره را کامل کن",
+                                            Toast.LENGTH_LONG).show()
                                     }
                                 }
                             ) { Text("✓", style = MaterialTheme.typography.headlineMedium) }
