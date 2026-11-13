@@ -164,7 +164,10 @@ internal object PersianVoiceInterpreter {
         val phones = mobileNumbers(text)
         val chosenPerson = if (correctPerson) people.lastOrNull() else people.distinct().singleOrNull()
         val chosenCompany = if (correctCompany) companies.lastOrNull() else companies.singleOrNull()
-        val chosenPhone = phones.singleOrNull()
+        // Even a valid number is unsafe to attach when the user mentioned
+        // several people and did not explicitly identify a correction.
+        val chosenPhone = if (people.distinct().size > 1 && !correctPhone) null
+            else phones.singleOrNull()
         val phoneWasMentioned = phoneHint.containsMatchIn(text) && !Regex("""شماره(?:\s+تماس)?\s*(?:ندارم|نداریم|نامشخص|معلوم نیست)""").containsMatchIn(text)
         val alerts = mutableListOf<String>()
         if (phoneWasMentioned && chosenPhone == null)
@@ -193,6 +196,9 @@ internal object PersianVoiceInterpreter {
             .containsMatchIn(text)
         if (!mentionsMeeting && !mentionsCall) return null
         val category = if (mentionsMeeting) "جلسه" else "تماس / پیگیری"
+        val appointmentCorrection = correcting &&
+            (Regex("""(?:ساعت|زمان|روز|تاریخ)s*(?:قرار|جلسه|تماس)|(?:قرار|جلسه|تماس).{0,45}(?:اشتباه|غلط|اصلاح|تغییر|درستش)""")
+                .containsMatchIn(text))
         val timeMatch = Regex("""ساعت\s*([0-9]{1,2}|[\p{L}]+)(?:[:٫.]([0-9]{1,2}))?""")
             .find(text)
         val hourWord = timeMatch?.groupValues?.getOrNull(1)
@@ -202,7 +208,7 @@ internal object PersianVoiceInterpreter {
         if (afterHour.contains("نیم")) minute = 30
         else if (afterHour.contains("ربع")) minute = 15
         if (hour == null || hour !in 0..23 || minute !in 0..59)
-            return VoiceAppointmentAction(category, null, null, leadDays(text), correcting,
+            return VoiceAppointmentAction(category, null, null, leadDays(text), appointmentCorrection,
                 "برای ثبت $category، ساعت را هم بگو؛ مثلاً فردا ساعت 4 عصر.")
 
         val mentionsPm = Regex("""بعدازظهر|بعد از ظهر|عصر|شب""").containsMatchIn(text)
@@ -221,7 +227,7 @@ internal object PersianVoiceInterpreter {
         val minuteOfDay = hour * 60 + minute
         if (hourWord != null && (hourWord.toIntOrNull() ?: 0) <= 12 &&
             !mentionsPm && !mentionsAm && !mentionsNoon && hour in 1..12) {
-            return VoiceAppointmentAction(category, null, minuteOfDay, leadDays(text), correcting,
+            return VoiceAppointmentAction(category, null, minuteOfDay, leadDays(text), appointmentCorrection,
                 "ساعت $category صبح است یا عصر؟ با ویس کوتاه اصلاح کن.")
         }
 
@@ -239,13 +245,13 @@ internal object PersianVoiceInterpreter {
         }
         if (day == null) {
             return VoiceAppointmentAction(category, null, minuteOfDay, leadDays(text),
-                correcting, "روز $category مشخص نیست؛ مثلاً بگو «فردا ساعت 4 عصر» یا «این سه شنبه ساعت 4 عصر».")
+                appointmentCorrection, "روز $category مشخص نیست؛ مثلاً بگو «فردا ساعت 4 عصر» یا «این سه شنبه ساعت 4 عصر».")
         }
         val due = LocalDateTime.of(day, java.time.LocalTime.of(hour, minute))
             .atZone(zone).toInstant().toEpochMilli()
         if (due <= nowMs) return VoiceAppointmentAction(category, null, minuteOfDay, leadDays(text),
-            correcting, "زمان گفته‌شده در گذشته است؛ تاریخ یا ساعت آینده را بگو.")
-        return VoiceAppointmentAction(category, due, minuteOfDay, leadDays(text), correcting, null)
+            appointmentCorrection, "زمان گفته‌شده در گذشته است؛ تاریخ یا ساعت آینده را بگو.")
+        return VoiceAppointmentAction(category, due, minuteOfDay, leadDays(text), appointmentCorrection, null)
     }
 
     private fun leadDays(text: String): Int {
