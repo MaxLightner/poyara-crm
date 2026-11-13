@@ -119,19 +119,9 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
     val googlePrefs = remember { context.getSharedPreferences(GoogleContactsBridge.PREFS, Context.MODE_PRIVATE) }
     var googleAccount by remember { mutableStateOf(googlePrefs.getString("account", "").orEmpty()) }
     var googleSyncBusy by remember { mutableStateOf(false) }
-    val textAgentSettings = remember { VoiceServerSettings(context.applicationContext) }
-    val directGeminiSettings = remember { GeminiLocalSettings(context.applicationContext) }
-    val cloudflareSettings = remember { CloudflareLocalSettings(context.applicationContext) }
-    var cloudflareAccountId by remember { mutableStateOf(cloudflareSettings.accountId) }
-    var cloudflareApiToken by remember { mutableStateOf("") }
-    val cloudflareStatusPrefs = remember {
-        context.getSharedPreferences("poyara_cloudflare_status", Context.MODE_PRIVATE)
-    }
-    var cloudflareVerified by remember {
-        mutableStateOf(cloudflareStatusPrefs.getBoolean("verified", false))
-    }
-    var cloudflareChecking by remember { mutableStateOf(false) }
-    var directGeminiKey by remember { mutableStateOf("") }
+    val centralAgent = remember { CentralAgentClient() }
+    var centralCheckBusy by remember { mutableStateOf(false) }
+    var centralAgentStatus by remember { mutableStateOf("") }
     val agentPrefs = remember { context.getSharedPreferences("poyara_text_agent", Context.MODE_PRIVATE) }
     var agentPrivacyConsent by remember {
         mutableStateOf(agentPrefs.getBoolean("cloud_text_consent_v1", false))
@@ -142,8 +132,6 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
         mutableStateOf(agentPrefs.getBoolean("enabled", false) &&
             agentPrefs.getBoolean("cloud_text_consent_v1", false))
     }
-    var agentUrl by rememberSaveable { mutableStateOf(textAgentSettings.endpoint) }
-    var agentPairingToken by remember { mutableStateOf("") }
     var agentBusy by remember { mutableStateOf(false) }
     var pendingVoiceTranscript by rememberSaveable { mutableStateOf("") }
     var pendingVoiceFilePath by rememberSaveable { mutableStateOf("") }
@@ -157,7 +145,6 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
     var showAllGroups by rememberSaveable { mutableStateOf(false) }
     var showAllRoles by rememberSaveable { mutableStateOf(false) }
     var roleMenuOpen by remember { mutableStateOf(false) }
-    var showDeveloperSettings by rememberSaveable { mutableStateOf(false) }
     var customCategories by remember {
         mutableStateOf(context.getSharedPreferences("crm_categories", Context.MODE_PRIVATE)
             .getStringSet("names", emptySet()).orEmpty().toSet())
@@ -561,7 +548,7 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
             listOf("متن گفتار ذخیره شد؛ دستور روشن دیگری برای اعمال پیدا نشد.")
         }
         if (agentOptIn && agentPrivacyConsent &&
-            cloudflareSettings.configured && !agentBusy) {
+            centralAgent.configured && !agentBusy) {
             val sourceEntryId = entryId
             val sourceName = personName
             val sourcePhone = phone
@@ -574,7 +561,7 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                         val sameContact = db.all().filter { it.id == sourceEntryId }
                         val sameReminders = db.allReminders()
                             .filter { it.entryId == sourceEntryId }
-                        CloudflareDirectClient(context.applicationContext).analyze(
+                        centralAgent.analyze(
                             transcript, audio, sameContact.firstOrNull(), sameReminders)
                     }
                 }
@@ -1090,7 +1077,7 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                     if (!text.isNullOrBlank()) {
                         appendRawSpeech(text)
                         addSpeechToCapture(text)
-                    } else if (agentOptIn && cloudflareSettings.configured &&
+                    } else if (agentOptIn && centralAgent.configured &&
                         agentPrivacyConsent) {
                         agentMessages = listOf("فایل صوتی دریافت شد؛ در حال تبدیل با Whisper و تحلیل هوشمند...")
                         addSpeechToCapture("")
@@ -1582,117 +1569,53 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                 Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
                     Column(Modifier.fillMaxWidth().padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("هوش مصنوعی رایگان · Cloudflare Workers AI",
-                            fontWeight = FontWeight.SemiBold)
-                        Text("مدل GLM-4.7-Flash؛ پردازش پس از هر ویس خودکار است. سهمیه رایگان روزانه Cloudflare محدود است.",
-                            style = MaterialTheme.typography.bodySmall)
+                        Text("هوش مصنوعی پویارا", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            if (centralAgent.configured)
+                                "سرویس مشترک تیم برای این نسخه تنظیم شده است؛ لازم نیست حساب یا API وارد کنی."
+                            else
+                                "سرویس مرکزی توسط مدیر سامانه هنوز راه‌اندازی نشده؛ امکانات محلی فعال‌اند.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(checked = agentPrivacyConsent, onCheckedChange = { accepted ->
-                                agentPrivacyConsent = accepted
-                                if (!accepted) agentOptIn = false
-                                agentPrefs.edit().putBoolean("cloud_text_consent_v1", accepted)
-                                    .putBoolean("enabled", if (accepted) agentOptIn else false).apply()
-                            })
-                            Text("اجازه ارسال متن و فایل صوتی برای پردازش را می‌دهم",
+                            Checkbox(checked = agentPrivacyConsent,
+                                onCheckedChange = { allowed ->
+                                    agentPrivacyConsent = allowed
+                                    agentOptIn = allowed && centralAgent.configured
+                                    agentPrefs.edit()
+                                        .putBoolean("cloud_text_consent_v1", allowed)
+                                        .putBoolean("enabled", agentOptIn)
+                                        .apply()
+                                })
+                            Text("پردازش خودکار ویس با هوش مصنوعی مرکزی",
                                 style = MaterialTheme.typography.bodySmall)
                         }
-                        if (cloudflareSettings.configured) {
-                            Text(
-                                if (cloudflareVerified) "✓ اتصال Workers AI قبلاً بررسی شده است"
-                                else "حساب ذخیره شده؛ اتصال هنوز تأیید نشده است",
-                                color = MaterialTheme.colorScheme.primary,
-                                style = MaterialTheme.typography.bodySmall
-                            )
+                        if (centralAgent.configured) {
                             OutlinedButton(
-                                enabled = !cloudflareChecking,
+                                enabled = !centralCheckBusy,
                                 onClick = {
-                                    cloudflareChecking = true
+                                    centralCheckBusy = true
                                     coroutineScope.launch {
-                                        val check = withContext(Dispatchers.IO) {
-                                            runCatching {
-                                                CloudflareDirectClient(context.applicationContext)
-                                                    .testConnection()
-                                            }
+                                        val result = withContext(Dispatchers.IO) {
+                                            runCatching { centralAgent.testConnection() }
                                         }
-                                        cloudflareChecking = false
-                                        check.onSuccess {
-                                            cloudflareVerified = true
-                                            cloudflareStatusPrefs.edit()
-                                                .putBoolean("verified", true).apply()
-                                            agentOptIn = agentPrivacyConsent
-                                            agentPrefs.edit().putBoolean("enabled", agentOptIn).apply()
-                                            Toast.makeText(context,
-                                                "اتصال هوش مصنوعی برقرار است",
-                                                Toast.LENGTH_LONG).show()
-                                        }.onFailure { error ->
-                                            cloudflareVerified = false
-                                            cloudflareStatusPrefs.edit()
-                                                .putBoolean("verified", false).apply()
-                                            agentOptIn = false
-                                            agentPrefs.edit().putBoolean("enabled", false).apply()
-                                            Toast.makeText(context,
+                                        centralCheckBusy = false
+                                        centralAgentStatus = result.fold(
+                                            onSuccess = { verified ->
+                                                if (verified) "✓ سرویس مرکزی در دسترس است"
+                                                else "سرویس مرکزی پاسخی معتبر نداد"
+                                            },
+                                            onFailure = { error ->
                                                 "اتصال برقرار نشد: " +
-                                                    error.localizedMessage.orEmpty().take(150),
-                                                Toast.LENGTH_LONG).show()
-                                        }
+                                                    error.localizedMessage.orEmpty().take(130)
+                                            }
+                                        )
                                     }
                                 }
-                            ) { Text(if (cloudflareChecking) "در حال بررسی..." else "آزمایش اتصال") }
-                        } else {
-                            OutlinedTextField(value = cloudflareAccountId,
-                                onValueChange = { cloudflareAccountId = it.trim() },
-                                label = { Text("Account ID حساب Cloudflare") },
-                                modifier = Modifier.fillMaxWidth(), singleLine = true)
-                            OutlinedTextField(value = cloudflareApiToken,
-                                onValueChange = { cloudflareApiToken = it },
-                                label = { Text("API Token محدود به Workers AI") },
-                                visualTransformation = PasswordVisualTransformation(),
-                                modifier = Modifier.fillMaxWidth(), singleLine = true)
-                            TextButton(onClick = {
-                                context.startActivity(Intent(Intent.ACTION_VIEW,
-                                    Uri.parse("https://dash.cloudflare.com/")))
-                            }) { Text("بازکردن Cloudflare Dashboard") }
-                            Button(onClick = {
-                                runCatching {
-                                    require(agentPrivacyConsent) {
-                                        "ابتدا اجازه ارسال گفتار به سرویس ابری را تأیید کن."
-                                    }
-                                    cloudflareSettings.save(cloudflareAccountId, cloudflareApiToken)
-                                    cloudflareApiToken = ""
-                                    cloudflareVerified = false
-                                    cloudflareStatusPrefs.edit().putBoolean("verified", false).apply()
-                                    agentOptIn = false
-                                    agentPrefs.edit().putBoolean("enabled", false).apply()
-                                }.onSuccess {
-                                    Toast.makeText(context, "حساب ذخیره شد؛ حالا «آزمایش اتصال» را بزن",
-                                        Toast.LENGTH_LONG).show()
-                                }.onFailure {
-                                    Toast.makeText(context, it.localizedMessage.orEmpty(),
-                                        Toast.LENGTH_LONG).show()
-                                }
-                            }, enabled = cloudflareAccountId.isNotBlank() &&
-                                    cloudflareApiToken.isNotBlank()) {
-                                Text("فعال‌سازی هوش مصنوعی")
-                            }
+                            ) { Text(if (centralCheckBusy) "در حال بررسی..." else "بررسی وضعیت اتصال") }
                         }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("پردازش خودکار", modifier = Modifier.weight(1f))
-                            Switch(checked = agentOptIn && cloudflareSettings.configured && cloudflareVerified,
-                                enabled = cloudflareSettings.configured && cloudflareVerified && agentPrivacyConsent,
-                                onCheckedChange = { enabled ->
-                                    agentOptIn = enabled && agentPrivacyConsent
-                                    agentPrefs.edit().putBoolean("enabled", agentOptIn).apply()
-                                })
-                        }
-                        if (cloudflareSettings.configured) {
-                            TextButton(onClick = {
-                                cloudflareSettings.clear()
-                                cloudflareVerified = false
-                                cloudflareStatusPrefs.edit().putBoolean("verified", false).apply()
-                                agentOptIn = false
-                                agentPrefs.edit().putBoolean("enabled", false).apply()
-                            }) { Text("حذف اتصال Cloudflare") }
-                        }
+                        if (centralAgentStatus.isNotBlank())
+                            Text(centralAgentStatus, style = MaterialTheme.typography.bodySmall)
                         if (agentBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
                         agentMessages.takeLast(2).forEach {
                             Text(it, style = MaterialTheme.typography.bodySmall)
@@ -1923,7 +1846,7 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                     Text("در حال تحلیل خودکار گفتار...",
                         style = MaterialTheme.typography.bodySmall)
                 }
-                if (!agentBusy && cloudflareSettings.configured &&
+                if (!agentBusy && centralAgent.configured &&
                     pendingVoiceTranscript.isNotBlank() &&
                     agentMessages.any { "در دسترس نبود" in it || "خطا" in it }) {
                     TextButton(onClick = {
@@ -1939,8 +1862,8 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                     Text(recordingError, color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall)
                 }
-                if (!cloudflareSettings.configured && agentMessages.isNotEmpty()) {
-                    Text("برای تحلیل ابری یک‌بار Workers AI را در تنظیمات وصل کن؛ پردازش محلی فعال است.",
+                if (!centralAgent.configured && agentMessages.isNotEmpty()) {
+                    Text("Agent مرکزی هنوز توسط مدیر سامانه متصل نشده است؛ ذخیره‌سازی محلی فعال است.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.secondary)
                 }
