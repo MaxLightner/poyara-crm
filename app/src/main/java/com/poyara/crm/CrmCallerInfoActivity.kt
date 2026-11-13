@@ -110,6 +110,9 @@ class CrmCallerInfoActivity : ComponentActivity() {
                             val open = Intent(this@CrmCallerInfoActivity,
                                 MainActivity::class.java).apply {
                                 putExtra("record_id", entryId)
+                                putExtra("complete_profile",
+                                    entry != null && (entry.role.isBlank() ||
+                                        entry.category.isBlank()))
                                 addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
                             }
                             startActivity(open)
