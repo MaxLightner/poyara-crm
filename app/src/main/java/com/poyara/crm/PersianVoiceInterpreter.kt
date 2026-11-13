@@ -197,7 +197,7 @@ internal object PersianVoiceInterpreter {
         if (!mentionsMeeting && !mentionsCall) return null
         val category = if (mentionsMeeting) "جلسه" else "تماس / پیگیری"
         val appointmentCorrection = correcting &&
-            (Regex("""(?:ساعت|زمان|روز|تاریخ)s*(?:قرار|جلسه|تماس)|(?:قرار|جلسه|تماس).{0,45}(?:اشتباه|غلط|اصلاح|تغییر|درستش)""")
+            (Regex("""(?:ساعت|زمان|روز|تاریخ)\s*(?:قرار|جلسه|تماس)|(?:قرار|جلسه|تماس).{0,45}(?:اشتباه|غلط|اصلاح|تغییر|درستش)""")
                 .containsMatchIn(text))
         val timeMatch = Regex("""ساعت\s*([0-9]{1,2}|[\p{L}]+)(?:[:٫.]([0-9]{1,2}))?""")
             .find(text)
