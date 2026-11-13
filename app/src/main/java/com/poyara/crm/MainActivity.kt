@@ -388,8 +388,15 @@ private fun CrmHome(initialRecordId: Long) {
                     ReminderScheduler.createChannel(context)
                     ReminderScheduler.schedule(context, reminder)
                     needVoiceNotificationPermission = true
-                    feedback += appointment.category + " در برنامه کاری ثبت شد؛ یادآوری " +
-                        appointment.leadDays + " روز قبل."
+                    val alertAt = reminder.dueAt -
+                        java.util.concurrent.TimeUnit.DAYS.toMillis(reminder.remindDaysBefore.toLong())
+                    feedback += appointment.category + " در برنامه کاری ثبت شد."
+                    if (alertAt <= System.currentTimeMillis()) {
+                        warnings += "موعد یادآوری " + reminder.remindDaysBefore +
+                            " روز قبل گذشته است؛ سیستم یک اعلان نزدیک‌تر تنظیم می‌کند."
+                    } else {
+                        feedback += "اعلان " + reminder.remindDaysBefore + " روز قبل تنظیم شد."
+                    }
                 }
             } catch (error: Exception) {
                 warnings += "ثبت یا اصلاح قرار ناموفق بود؛ اطلاعات گفتار محفوظ است."
