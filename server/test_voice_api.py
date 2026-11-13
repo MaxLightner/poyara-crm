@@ -17,6 +17,16 @@ class VoiceApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "ok")
 
+    def test_free_provider_health_metadata(self):
+        with patch.dict(os.environ, {
+            "POYARA_TEXT_PROVIDER": "gemini",
+            "GEMINI_MODEL": "gemini-3.5-flash-lite",
+        }):
+            response = self.client.get("/health")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["text_provider"], "gemini")
+        self.assertEqual(response.json()["text_model"], "gemini-3.5-flash-lite")
+
     def test_auth_required(self):
         with patch.dict(os.environ, {"POYARA_VOICE_TOKEN": "a" * 40}):
             response = self.client.post(
