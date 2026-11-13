@@ -7,7 +7,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * Sends only text + a small candidate list to user's opt-in HTTPS agent.
+ * Sends speech text + current contact name/company only to an opt-in HTTPS agent.
  * AI provider keys remain on the server, never in the Android APK.
  */
 internal class CrmTextAgentClient(context: Context) {
@@ -21,11 +21,10 @@ internal class CrmTextAgentClient(context: Context) {
             .put("transcript", transcript)
             .put("timezone", java.time.ZoneId.systemDefault().id)
             .put("contacts", JSONArray().apply {
-                contacts.take(15).forEach { contact ->
+                contacts.take(1).forEach { contact ->
                     put(JSONObject()
                         .put("name", contact.name.take(100))
-                        .put("company", contact.company.take(100))
-                        .put("phone", contact.phone.take(40)))
+                        .put("company", contact.company.take(100)))
                 }
             })
         val request = (URL(settings.endpoint + "/v1/text/analyze")
