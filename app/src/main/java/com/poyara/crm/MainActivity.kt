@@ -121,6 +121,9 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
     var googleSyncBusy by remember { mutableStateOf(false) }
     val textAgentSettings = remember { VoiceServerSettings(context.applicationContext) }
     val directGeminiSettings = remember { GeminiLocalSettings(context.applicationContext) }
+    val cloudflareSettings = remember { CloudflareLocalSettings(context.applicationContext) }
+    var cloudflareAccountId by remember { mutableStateOf(cloudflareSettings.accountId) }
+    var cloudflareApiToken by remember { mutableStateOf("") }
     var directGeminiKey by remember { mutableStateOf("") }
     val agentPrefs = remember { context.getSharedPreferences("poyara_text_agent", Context.MODE_PRIVATE) }
     var agentPrivacyConsent by remember {
@@ -377,7 +380,10 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
         pendingVoiceTranscript = listOf(pendingVoiceTranscript, value)
             .filter { it.isNotBlank() }.joinToString("\n")
         save(newNote = next)
-        agentMessages = listOf("گفتار به کادر اضافه شد. برای اجرای دستورها، «پردازش» را بزن.")
+        agentMessages = listOf("گفتار ثبت شد؛ در حال تحلیل و استخراج اطلاعات...")
+        // A single action runs the local parser and optional cloud model; no
+        // second explicit "Process" tap is required.
+        if (!agentBusy) addSpeechToCapture(value)
     }
 
     // Voice input is the user's source of truth. Keep the original transcript,
@@ -386,7 +392,8 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
     fun addSpeechToCapture(transcript: String) {
         if (transcript.isBlank() && pendingVoiceFilePath.isBlank()) return
         val actions = PersianVoiceInterpreter.parse(
-            if (agentOptIn && (directGeminiSettings.configured || textAgentSettings.configured))
+            if (agentOptIn && (cloudflareSettings.configured ||
+                directGeminiSettings.configured || textAgentSettings.configured))
                 "" else transcript,
             personName, companyName, phone)
         val previousName = personName
@@ -550,8 +557,8 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
             listOf("متن گفتار ذخیره شد؛ دستور روشن دیگری برای اعمال پیدا نشد.")
         }
         if (agentOptIn && agentPrivacyConsent &&
-            (directGeminiSettings.configured || textAgentSettings.configured) &&
-            !agentBusy) {
+            (cloudflareSettings.configured || directGeminiSettings.configured ||
+                textAgentSettings.configured) && !agentBusy) {
             val sourceEntryId = entryId
             val sourceName = personName
             val sourcePhone = phone
@@ -564,7 +571,10 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                         val sameContact = db.all().filter { it.id == sourceEntryId }
                         val sameReminders = db.allReminders()
                             .filter { it.entryId == sourceEntryId }
-                        if (directGeminiSettings.configured) {
+                        if (cloudflareSettings.configured) {
+                            CloudflareDirectClient(context.applicationContext).analyze(
+                                transcript, audio, sameContact.firstOrNull(), sameReminders)
+                        } else if (directGeminiSettings.configured) {
                             GeminiDirectClient(context.applicationContext).analyze(
                                 transcript, audio, sameContact.firstOrNull(), sameReminders)
                         } else {
@@ -972,7 +982,8 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                     recordingError = error ?: "سرویس گفتار گوشی متنی برنگرداند."
                 } else {
                     appendRawSpeech(text)
-                    Toast.makeText(context, "متن در کادر آماده پردازش است", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "گفتار ثبت شد و در حال پردازش است",
+                        Toast.LENGTH_SHORT).show()
                 }
             }
         )
@@ -1083,12 +1094,16 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                     voiceTranscribing = false
                     voiceFileReader = null
                     if (!text.isNullOrBlank()) appendRawSpeech(text)
-                    else {
+                    else if (agentOptIn && cloudflareSettings.configured &&
+                        agentPrivacyConsent) {
+                        agentMessages = listOf("فایل صوتی دریافت شد؛ در حال تبدیل با Whisper و تحلیل هوشمند...")
+                        addSpeechToCapture("")
+                    } else {
                         // A recognizer rejecting prerecorded M4A is a status,
                         // NEVER a customer note or customer name.
                         agentMessages = listOf(
                             "فایل صوتی محفوظ است ولی تشخیص متن توسط گوشی انجام نشد. " +
-                            "اگر Gemini فعال است «پردازش» را بزن، یا از حالت گفتار زنده استفاده کن.",
+                            "حالت گفتار زنده را امتحان کن یا Workers AI را در تنظیمات فعال کن.",
                             error.orEmpty()
                         ).filter { it.isNotBlank() }
                     }
