@@ -2,6 +2,11 @@ name: Deploy central POYARA Workers AI backend
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'cloudflare-worker/**'
+      - '.github/workflows/deploy-cloudflare-agent.yml'
   push:
     branches: [main]
     paths:
