@@ -297,7 +297,7 @@ class OfflineMapActivity : ComponentActivity() {
             val lon = previewLongitude ?: saved?.longitude
             if (lat != null && lon != null) {
                 val label = previewLabel.takeIf { it != "موقعیت مجموعه" }
-                    ?: saved?.company?.ifBlank { saved.name }?.ifBlank { null }
+                    ?: saved?.company?.ifBlank { saved.name }?.takeIf { it.isNotBlank() }
                     ?: "موقعیت مجموعه"
                 val pin = Marker(mapView).apply {
                     position = GeoPoint(lat, lon)
