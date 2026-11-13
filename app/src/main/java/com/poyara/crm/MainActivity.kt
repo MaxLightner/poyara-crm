@@ -1394,7 +1394,7 @@ private fun CrmHome(initialRecordId: Long) {
         }
 
         if (page == "settings") {
-            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+            Column(Modifier.weight(1f).verticalScroll(rememberScrollState())
                 .padding(bottom = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("تنظیمات پویارا", style = MaterialTheme.typography.titleLarge,
@@ -1540,7 +1540,7 @@ private fun CrmHome(initialRecordId: Long) {
             }
         } else if (page == "capture") {
             Column(
-                Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+                Modifier.weight(1f).verticalScroll(rememberScrollState())
                     .padding(bottom = 104.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -1849,7 +1849,7 @@ private fun CrmHome(initialRecordId: Long) {
             }
         } else if (page == "messages") {
             Column(
-                Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                Modifier.weight(1f).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
@@ -1920,7 +1920,7 @@ private fun CrmHome(initialRecordId: Long) {
             }
         } else if (page == "agenda") {
             Column(
-                Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                Modifier.weight(1f).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 WeeklyAgenda(
@@ -2024,7 +2024,7 @@ private fun CrmHome(initialRecordId: Long) {
                         db.notes(entry.id).any { it.text.contains(search, ignoreCase = true) })
             }
             LazyColumn(
-                Modifier.fillMaxSize(),
+                Modifier.weight(1f).padding(bottom = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 filtered.sortedWith(compareBy<ContactEntry> { it.category }.thenBy { it.company })
