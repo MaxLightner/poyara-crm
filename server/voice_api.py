@@ -198,7 +198,13 @@ async def analyze_text(
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "poyara-voice", "version": 1}
+    provider = os.getenv("POYARA_TEXT_PROVIDER", "gemini").strip().lower()
+    return {
+        "status": "ok", "service": "poyara-voice", "version": 2,
+        "text_provider": provider,
+        "text_model": os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
+            if provider == "gemini" else os.getenv("POYARA_EXTRACTION_MODEL", "gpt-6-luna"),
+    }
 
 @app.post("/v1/voice/analyze")
 async def analyze(
