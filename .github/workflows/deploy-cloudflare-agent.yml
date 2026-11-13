@@ -1,0 +1,96 @@
+name: Deploy central POYARA Workers AI backend
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'cloudflare-worker/**'
+      - 'app/**'
+      - '.github/workflows/deploy-cloudflare-agent.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'cloudflare-worker/**'
+      - 'app/**'
+      - '.github/workflows/deploy-cloudflare-agent.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm test
+        working-directory: cloudflare-worker
+
+  deploy:
+    needs: tests
+    if: github.ref == 'refs/heads/main' && vars.POYARA_CLOUD_BACKEND_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy central Worker and app-scoped access key
+        id: worker_deploy
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          workingDirectory: cloudflare-worker
+          command: deploy
+          secrets: |
+            POYARA_APP_ACCESS_KEY
+        env:
+          POYARA_APP_ACCESS_KEY: ${{ secrets.POYARA_APP_ACCESS_KEY }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Build Android using actual deployed Worker URL
+        env:
+          DEPLOYED_WORKER_URL: ${{ steps.worker_deploy.outputs.deployment-url }}
+          POYARA_APP_ACCESS_KEY: ${{ secrets.POYARA_APP_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOYED_WORKER_URL"
+          test -n "$POYARA_APP_ACCESS_KEY"
+          # GitHub Action output may contain a descriptive suffix; only the
+          # first whitespace-separated HTTPS URL is permitted in APK config.
+          POYARA_CENTRAL_AGENT_URL="${DEPLOYED_WORKER_URL%% *}"
+          case "$POYARA_CENTRAL_AGENT_URL" in
+            https://*.workers.dev|https://*.poyara.*) ;;
+            *) echo "Unexpected Worker URL; refusing to ship APK" >&2; exit 1 ;;
+          esac
+          export POYARA_CENTRAL_AGENT_URL
+          gradle --no-daemon :app:assembleDebug
+          version="$(awk -F '"' '/versionName =/ {print $2; exit}' app/build.gradle.kts)"
+          test -n "$version"
+          echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+          cp app/build/outputs/apk/debug/app-debug.apk "POYARA-CRM-$version.apk"
+          sha256sum "POYARA-CRM-$version.apk"
+      - name: Publish connected Android APK on public GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag="v$RELEASE_VERSION"
+          asset="POYARA-CRM-$RELEASE_VERSION.apk"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$asset" --clobber
+          else
+            gh release create "$tag" "$asset" --target "$GITHUB_SHA" \
+              --title "POYARA CRM $RELEASE_VERSION (central agent beta)" \
+              --notes "Android beta connected to centralized Cloudflare Workers AI. Backup previous app data before installation; debug-signing keys can vary across runs. Shared pilot app key is revocable but extractable from APK. Use device enrollment before broad distribution." \
+              --prerelease
+          fi

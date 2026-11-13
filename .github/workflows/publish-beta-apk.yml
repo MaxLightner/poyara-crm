@@ -13,6 +13,9 @@ permissions:
 
 jobs:
   publish:
+    # The central Worker deployment workflow publishes connected APKs.
+    # Never release a disconnected APK from this legacy workflow.
+    if: vars.POYARA_CLOUD_BACKEND_ENABLED == 'legacy-manual-only'
     runs-on: ubuntu-latest
     timeout-minutes: 55
     steps:
@@ -25,7 +28,13 @@ jobs:
         with:
           gradle-version: '8.11.1'
       - name: Build tested APK
-        run: gradle --no-daemon :app:assembleDebug
+        env:
+          POYARA_CENTRAL_AGENT_URL: ${{ vars.POYARA_CENTRAL_AGENT_URL }}
+          POYARA_APP_ACCESS_KEY: ${{ secrets.POYARA_APP_ACCESS_KEY }}
+        run: |
+          test -n "$POYARA_CENTRAL_AGENT_URL"
+          test -n "$POYARA_APP_ACCESS_KEY"
+          gradle --no-daemon :app:assembleDebug
       - name: Prepare directly installable APK
         run: |
           set -euo pipefail

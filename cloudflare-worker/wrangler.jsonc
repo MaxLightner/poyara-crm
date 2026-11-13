@@ -1,0 +1,21 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "poyara-crm-agent",
+  "main": "src/index.js",
+  "compatibility_date": "2026-11-14",
+  "workers_dev": true,
+  "account_id": "ea19f3c93d4d0766bab87817ec19cf88",
+  "ai": { "binding": "AI" },
+  "ratelimits": [
+    {
+      "name": "REQUEST_LIMITER",
+      "namespace_id": "5071",
+      "simple": { "limit": 30, "period": 60 }
+    },
+    {
+      "name": "GLOBAL_LIMITER",
+      "namespace_id": "5072",
+      "simple": { "limit": 60, "period": 60 }
+    }
+  ]
+}
