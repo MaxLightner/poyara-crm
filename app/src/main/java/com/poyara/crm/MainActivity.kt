@@ -578,7 +578,7 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                 }
                 agentBusy = false
                 result.onSuccess { json ->
-                    if (sourceEntryId != recordId || sourceEntryId <= 0L) {
+                    if (sourceEntryId != recordId) {
                         agentMessages = listOf("تحلیل Agent آماده است اما پرونده عوض شده؛ تغییری اعمال نشد.")
                     } else {
                         val notes = mutableListOf<String>()
@@ -621,7 +621,7 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                                     .takeIf { it.isNotBlank() }
                                     ?: "جلسه با " + personName.ifBlank { companyName }
                                 pendingMeetingTime = timeText
-                                pendingMeetingEntryId = sourceEntryId
+                                pendingMeetingEntryId = recordId
                                 pendingMeetingLead = item.optInt("remind_days_before", 0)
                                     .coerceIn(0, 7)
                                 notes += "تاریخ یا ساعت قرار مبهم است؛ از پنجره تأیید انتخاب کن."
@@ -637,11 +637,15 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                             }
                             val title = item.optString("title", "جلسه با " + personName).take(160)
                             val lead = item.optInt("remind_days_before", 0).coerceIn(0, 7)
+                            if (recordId <= 0L) {
+                                notes += "قرار تشخیص داده شد ولی هنوز نام و شماره مخاطب کامل نیست؛ بعد از تکمیل دوباره پردازش کن."
+                                continue
+                            }
                             val duplicate = db.allReminders().any {
-                                it.entryId == sourceEntryId && it.dueAt == due && it.title == title
+                                it.entryId == recordId && it.dueAt == due && it.title == title
                             }
                             if (!duplicate) {
-                                val id = db.addReminder(sourceEntryId, title, due, lead)
+                                val id = db.addReminder(recordId, title, due, lead)
                                 db.allReminders().firstOrNull { it.id == id }?.let {
                                     ReminderScheduler.schedule(context, it)
                                 }
@@ -680,7 +684,7 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                                             ?: "جلسه با " + personName.ifBlank { companyName }
                                         pendingMeetingTime = action.optString("time_local")
                                             .takeUnless { it == "null" }.orEmpty()
-                                        pendingMeetingEntryId = sourceEntryId
+                                        pendingMeetingEntryId = recordId
                                         pendingMeetingLead = action.optInt("remind_days_before", 0)
                                             .coerceIn(0, 7)
                                         notes += "برای ثبت قرار، روز و ساعت را در پنجره تأیید انتخاب کن."
@@ -757,18 +761,20 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                                         val due = parseDue(action)
                                         if (due == null) {
                                             notes += "روز یا ساعت قرار روشن نیست؛ ثبت نشد."
+                                        } else if (recordId <= 0L) {
+                                            notes += "قرار تشخیص داده شد، اما مخاطب هنوز نام و شماره ندارد."
                                         } else {
                                             val title = action.optString("title")
                                                 .takeIf { it.isNotBlank() && it != "null" }
                                                 ?: "جلسه با " + personName.ifBlank { companyName }
                                             val duplicate = db.allReminders(includeDone = true).any {
-                                                it.entryId == sourceEntryId && it.dueAt == due &&
+                                                it.entryId == recordId && it.dueAt == due &&
                                                     it.title == title
                                             }
                                             if (!duplicate) {
                                                 val lead = action.optInt("remind_days_before", 0)
                                                     .coerceIn(0, 7)
-                                                val id = db.addReminder(sourceEntryId,
+                                                val id = db.addReminder(recordId,
                                                     title.take(160), due, lead)
                                                 db.allReminders().firstOrNull { it.id == id }
                                                     ?.let { ReminderScheduler.schedule(context, it) }
@@ -781,7 +787,7 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                                     "update_reminder" -> {
                                         val id = action.optLong("target_reminder_id", -1L)
                                         val old = db.allReminders().firstOrNull {
-                                            it.id == id && it.entryId == sourceEntryId }
+                                            it.id == id && it.entryId == recordId }
                                         if (old == null) {
                                             notes += "قرار موردنظر برای اصلاح پیدا نشد."
                                         } else {
@@ -790,7 +796,7 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                                                 .takeIf { it.isNotBlank() && it != "null" }
                                                 ?: old.title
                                             if (due != null && db.updateReminder(old.id,
-                                                    sourceEntryId, title.take(160), due,
+                                                    recordId, title.take(160), due,
                                                     action.optInt("remind_days_before",
                                                         old.remindDaysBefore).coerceIn(0,7))) {
                                                 ReminderScheduler.cancel(context, old.id)
@@ -803,7 +809,7 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                                     "delete_reminder" -> {
                                         val id = action.optLong("target_reminder_id", -1L)
                                         val old = db.allReminders().firstOrNull {
-                                            it.id == id && it.entryId == sourceEntryId }
+                                            it.id == id && it.entryId == recordId }
                                         if (old != null) {
                                             pendingDeleteReminderId = old.id
                                             pendingDeleteReminderTitle = old.title
