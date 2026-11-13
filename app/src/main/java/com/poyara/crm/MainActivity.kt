@@ -147,6 +147,8 @@ private fun CrmHome(initialRecordId: Long) {
     var newCategoryName by rememberSaveable { mutableStateOf("") }
     var addCategoryDialog by remember { mutableStateOf(false) }
     var agentMessages by remember { mutableStateOf<List<String>>(emptyList()) }
+    var pendingDeleteReminderId by remember { mutableLongStateOf(0L) }
+    var pendingDeleteReminderTitle by remember { mutableStateOf("") }
     var page by rememberSaveable { mutableStateOf("capture") }
     val startupEntry = remember(initialRecordId) { db.all().find { it.id == initialRecordId } }
     val draftPrefs = remember { context.getSharedPreferences("capture_draft", Context.MODE_PRIVATE) }
@@ -575,6 +577,8 @@ private fun CrmHome(initialRecordId: Long) {
                                 } else notes += "پیشنهاد مخاطب دیگر تشخیص داده شد؛ برای جلوگیری از اشتباه اعمال نشد."
                             }
                         }
+                        val customActions = json.optJSONArray("actions")
+                        if (customActions == null || customActions.length() == 0) {
                         val reminders = json.optJSONArray("reminders")
                         if (reminders != null) for (index in 0 until reminders.length()) {
                             val item = reminders.optJSONObject(index) ?: continue
@@ -606,6 +610,140 @@ private fun CrmHome(initialRecordId: Long) {
                                 notes += "قرار Agent در برنامه کاری ثبت شد: " + title
                             }
                         }
+                        }
+                        // Execute only an allow-listed CRM command set. Never accept
+                        // SQL, code, arbitrary URLs, or arbitrary shell commands.
+                        if (customActions != null) {
+                            fun parseDue(action: JSONObject, fallbackDate: Long? = null): Long? {
+                                val dateValue = action.optString("date_iso")
+                                    .takeUnless { it == "null" || it.isBlank() }
+                                val timeValue = action.optString("time_local")
+                                    .takeUnless { it == "null" || it.isBlank() }
+                                return runCatching {
+                                    val date = if (dateValue == null && fallbackDate != null)
+                                        java.time.Instant.ofEpochMilli(fallbackDate)
+                                            .atZone(ZoneId.systemDefault()).toLocalDate()
+                                    else LocalDate.parse(dateValue)
+                                    val clock = LocalTime.parse(timeValue)
+                                    date.atTime(clock).atZone(ZoneId.systemDefault())
+                                        .toInstant().toEpochMilli()
+                                }.getOrNull()?.takeIf { it > System.currentTimeMillis() }
+                            }
+                            for (i in 0 until customActions.length()) {
+                                val action = customActions.optJSONObject(i) ?: continue
+                                val type = action.optString("type")
+                                val value = action.optString("value")
+                                    .takeUnless { it == "null" }.orEmpty().trim()
+                                if (action.optBoolean("requires_confirmation")) {
+                                    notes += "برای دستور «$type» اطلاعات بیشتری لازم است."
+                                    continue
+                                }
+                                when (type) {
+                                    "correct_name" -> {
+                                        if (value.length in 2..100) {
+                                            personName = value
+                                            save()
+                                            notes += "نام مخاطب اصلاح شد: $value"
+                                        }
+                                    }
+                                    "add_phone" -> {
+                                        val number = normalizePhone(value)
+                                        if (number.matches(Regex("""0\d{8,12}"""))) {
+                                            if (phone.isBlank()) phone = number
+                                            else if (number != normalizePhone(phone) &&
+                                                extraPhones.none { normalizePhone(it) == number })
+                                                extraPhones = extraPhones + number
+                                            save()
+                                            notes += "شماره در مخاطب ثبت شد: $number"
+                                        } else notes += "شماره پیشنهادی نامعتبر است؛ ثبت نشد."
+                                    }
+                                    "set_role" -> if (value.isNotBlank()) {
+                                        contactRole = value.take(100)
+                                        if ("مدیر" in value || "مدیریت" in value)
+                                            chosenTags = chosenTags + "مدیریت"
+                                        save()
+                                        notes += "سمت ثبت شد: $value"
+                                    }
+                                    "set_category" -> if (value.isNotBlank()) {
+                                        contactCategory = value.take(100)
+                                        save()
+                                        notes += "گروه ثبت شد: $value"
+                                    }
+                                    "append_note" -> if (value.isNotBlank()) {
+                                        note = listOf(note, value.take(500))
+                                            .filter { it.isNotBlank() }.joinToString("\n")
+                                        save(newNote = note)
+                                        notes += "یادداشت تکمیلی اضافه شد."
+                                    }
+                                    "create_reminder" -> {
+                                        val due = parseDue(action)
+                                        if (due == null) {
+                                            notes += "روز یا ساعت قرار روشن نیست؛ ثبت نشد."
+                                        } else {
+                                            val title = action.optString("title")
+                                                .takeIf { it.isNotBlank() && it != "null" }
+                                                ?: "جلسه با " + personName.ifBlank { companyName }
+                                            val duplicate = db.allReminders(includeDone = true).any {
+                                                it.entryId == sourceEntryId && it.dueAt == due &&
+                                                    it.title == title
+                                            }
+                                            if (!duplicate) {
+                                                val id = db.addReminder(sourceEntryId,
+                                                    title.take(160), due, 0)
+                                                db.allReminders().firstOrNull { it.id == id }
+                                                    ?.let { ReminderScheduler.schedule(context, it) }
+                                                needVoiceNotificationPermission = true
+                                            }
+                                            notes += if (duplicate) "این قرار قبلاً ثبت شده است."
+                                                else "قرار در برنامه کاری ثبت شد: $title"
+                                        }
+                                    }
+                                    "update_reminder" -> {
+                                        val id = action.optLong("target_reminder_id", -1L)
+                                        val old = db.allReminders().firstOrNull {
+                                            it.id == id && it.entryId == sourceEntryId }
+                                        if (old == null) {
+                                            notes += "قرار موردنظر برای اصلاح پیدا نشد."
+                                        } else {
+                                            val due = parseDue(action, old.dueAt)
+                                            val title = action.optString("title")
+                                                .takeIf { it.isNotBlank() && it != "null" }
+                                                ?: old.title
+                                            if (due != null && db.updateReminder(old.id,
+                                                    sourceEntryId, title.take(160), due,
+                                                    old.remindDaysBefore)) {
+                                                ReminderScheduler.cancel(context, old.id)
+                                                db.allReminders().firstOrNull { it.id == old.id }
+                                                    ?.let { ReminderScheduler.schedule(context, it) }
+                                                notes += "قرار قبلی اصلاح شد: $title"
+                                            } else notes += "زمان جدید قرار معتبر نیست؛ تغییر نکرد."
+                                        }
+                                    }
+                                    "delete_reminder" -> {
+                                        val id = action.optLong("target_reminder_id", -1L)
+                                        val old = db.allReminders().firstOrNull {
+                                            it.id == id && it.entryId == sourceEntryId }
+                                        if (old != null) {
+                                            pendingDeleteReminderId = old.id
+                                            pendingDeleteReminderTitle = old.title
+                                            notes += "حذف «${old.title}» منتظر تأیید شماست."
+                                        } else notes += "قرار موردنظر برای حذف پیدا نشد."
+                                    }
+                                }
+                            }
+                        }
+                        val cleaned = json.optString("corrected_text").trim()
+                        if (cleaned.isNotBlank() && cleaned != transcript &&
+                            cleaned.length <= 10000) {
+                            if (transcript.isNotBlank() && note.contains(transcript)) {
+                                note = note.replace(transcript, cleaned)
+                            } else note = listOf(note, cleaned).filter { it.isNotBlank() }
+                                .joinToString("\n\n")
+                            save(newNote = note)
+                            notes += "متن گفتار و غلط‌های نگارشی اصلاح شد."
+                        }
+                        pendingVoiceTranscript = ""
+                        pendingVoiceFilePath = ""
                         val questions = json.optJSONArray("questions")
                         if (questions != null) for (i in 0 until questions.length()) {
                             questions.optString(i).takeIf { it.isNotBlank() }
