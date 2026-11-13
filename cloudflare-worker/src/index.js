@@ -115,8 +115,12 @@ export default {
     if (request.method !== "POST") return json({error:"Method not allowed"},405);
     if (!await authenticated(request, env.POYARA_APP_ACCESS_KEY)) return json({error:"Unauthorized"},401);
     if (isAuthCheck) return json({status:"ok", service:"poyara-central-agent"});
-    // Rate limit before running any billable model, even though the AI model
-    // itself is free within Cloudflare's finite daily allocation.
+    // Apply approximate Cloudflare rate limits before invoking any AI model.
+    // The global limit helps protect one team's quota from many source IPs.
+    if (env.GLOBAL_LIMITER) {
+      const { success } = await env.GLOBAL_LIMITER.limit({ key: "poyara-all" });
+      if (!success) return json({error:"Team AI quota is temporarily rate-limited"},429);
+    }
     if (env.REQUEST_LIMITER) {
       const ip = request.headers.get("cf-connecting-ip") || "unknown";
       const { success } = await env.REQUEST_LIMITER.limit({ key: ip });
