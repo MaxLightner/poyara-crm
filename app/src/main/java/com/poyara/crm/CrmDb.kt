@@ -16,7 +16,11 @@ data class ContactEntry(
     val latitude: Double? = null,
     val longitude: Double? = null,
     val locationSource: String? = null,
-    val groupId: Long? = null
+    val groupId: Long? = null,
+    val extraPhones: List<String> = emptyList(),
+    val role: String = "",
+    val category: String = "",
+    val syncId: String = ""
 )
 
 data class ContactNote(
@@ -64,7 +68,7 @@ data class VoiceUploadJob(
  * Local-first storage: no Contacts Provider access and no network dependency.
  * A text edit writes immediately; image/voice files remain in private app storage.
  */
-class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null, 8) {
+class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null, 9) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             """CREATE TABLE entries (
@@ -79,7 +83,11 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
                latitude REAL,
                longitude REAL,
                location_source TEXT,
-               group_id INTEGER
+               group_id INTEGER,
+               extra_phones TEXT NOT NULL DEFAULT '',
+               role TEXT NOT NULL DEFAULT '',
+               category TEXT NOT NULL DEFAULT '',
+               sync_id TEXT NOT NULL DEFAULT ''
             )"""
         )
         db.execSQL(
@@ -124,6 +132,13 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
         }
         if (oldVersion < 7) createVoiceReviewsTable(db)
         if (oldVersion < 8) createVoiceUploadTable(db)
+        if (oldVersion < 9) {
+            db.execSQL("ALTER TABLE entries ADD COLUMN extra_phones TEXT NOT NULL DEFAULT ''")
+            db.execSQL("ALTER TABLE entries ADD COLUMN role TEXT NOT NULL DEFAULT ''")
+            db.execSQL("ALTER TABLE entries ADD COLUMN category TEXT NOT NULL DEFAULT ''")
+            db.execSQL("ALTER TABLE entries ADD COLUMN sync_id TEXT NOT NULL DEFAULT ''")
+            db.execSQL("UPDATE entries SET sync_id=lower(hex(randomblob(16))) WHERE sync_id=''")
+        }
     }
 
     private fun createVoiceUploadTable(db: SQLiteDatabase) {
@@ -402,7 +417,9 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
     fun findByPhone(number: String): ContactEntry? {
         val target = normalizePhone(number)
         if (target.isBlank()) return null
-        val matches = all().filter { normalizePhone(it.phone) == target }
+        val matches = all().filter { entry ->
+            (listOf(entry.phone) + entry.extraPhones).any { normalizePhone(it) == target }
+        }
         return matches.singleOrNull()
     }
 
@@ -522,7 +539,11 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
         note: String,
         tags: Set<String>,
         company: String = "",
-        groupId: Long? = null
+        groupId: Long? = null,
+        extraPhones: List<String> = emptyList(),
+        role: String = "",
+        category: String = "",
+        syncId: String? = null
     ): Long {
         val now = System.currentTimeMillis()
         val resolvedCompany = company.trim().ifBlank { extractCompany(note) }
@@ -531,6 +552,10 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
             put("phone", phone.trim())
             put("note", note)
             put("company", resolvedCompany)
+            put("extra_phones", extraPhones.map { normalizePhone(it) }.filter { it.isNotBlank() && it != normalizePhone(phone) }.distinct().joinToString("|"))
+            put("role", role.trim())
+            put("category", category.trim())
+            if (id == 0L) put("sync_id", syncId?.takeIf { it.isNotBlank() } ?: java.util.UUID.randomUUID().toString())
             if (groupId != null && groupId > 0L) put("group_id", groupId) else putNull("group_id")
             put("tags", tags.sorted().joinToString("|"))
             put("updated_at", now)
@@ -622,7 +647,12 @@ class CrmDb(context: Context) : SQLiteOpenHelper(context, "poyara_crm.db", null,
                         },
                         cursor.getColumnIndexOrThrow("group_id").let { idx ->
                             if (cursor.isNull(idx)) null else cursor.getLong(idx)
-                        }
+                        },
+                        cursor.getString(cursor.getColumnIndexOrThrow("extra_phones"))
+                            .split("|").filter { it.isNotBlank() },
+                        cursor.getString(cursor.getColumnIndexOrThrow("role")),
+                        cursor.getString(cursor.getColumnIndexOrThrow("category")),
+                        cursor.getString(cursor.getColumnIndexOrThrow("sync_id"))
                     )
                 }
             }
