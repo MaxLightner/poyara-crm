@@ -329,6 +329,27 @@ private fun CrmHome(initialRecordId: Long) {
         val entryId = save(newName = personName, newCompany = companyName,
             newPhone = phone, newNote = provisional)
 
+        // If an explicit name/company correction changes the contact label,
+        // keep this contact's existing reminder titles consistent as well.
+        if (entryId > 0L && (actions.correctPerson || actions.correctCompany)) {
+            val previousLabel = previousName.ifBlank { previousCompany }
+            val updatedLabel = updatedName.ifBlank { updatedCompany }
+            if (previousLabel.isNotBlank() && updatedLabel.isNotBlank() &&
+                previousLabel != updatedLabel) {
+                db.allReminders().filter {
+                    it.entryId == entryId && it.title.contains(" با " + previousLabel)
+                }.forEach { previous ->
+                    if (db.updateReminder(previous.id, entryId,
+                            previous.title.replace(" با " + previousLabel, " با " + updatedLabel),
+                            previous.dueAt, previous.remindDaysBefore)) {
+                        ReminderScheduler.cancel(context, previous.id)
+                        db.allReminders().firstOrNull { it.id == previous.id }
+                            ?.let { ReminderScheduler.schedule(context, it) }
+                    }
+                }
+            }
+        }
+
         val appointment = actions.appointment
         if (appointment != null && entryId > 0L) {
             try {
