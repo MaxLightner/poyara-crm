@@ -659,6 +659,35 @@ private fun CrmHome(initialRecordId: Long) {
                                             notes += "نام مخاطب اصلاح شد: $value"
                                         }
                                     }
+                                    "correct_phone" -> {
+                                        val number = normalizePhone(value)
+                                        if (number.matches(Regex("""0\d{8,12}"""))) {
+                                            phone = number
+                                            extraPhones = extraPhones.filterNot {
+                                                normalizePhone(it) == number
+                                            }
+                                            save()
+                                            notes += "شماره اصلی با مقدار درست جایگزین شد."
+                                        } else notes += "شماره اصلاحی معتبر نبود."
+                                    }
+                                    "remove_phone" -> {
+                                        val number = normalizePhone(value)
+                                        if (number.isNotBlank()) {
+                                            if (normalizePhone(phone) == number) {
+                                                phone = extraPhones.firstOrNull().orEmpty()
+                                                extraPhones = extraPhones.drop(1)
+                                            } else extraPhones = extraPhones.filterNot {
+                                                normalizePhone(it) == number
+                                            }
+                                            save()
+                                            notes += "شماره درخواست‌شده حذف شد."
+                                        }
+                                    }
+                                    "set_company" -> if (value.isNotBlank()) {
+                                        companyName = value.take(150)
+                                        save()
+                                        notes += "نام مجموعه اصلاح شد: $companyName"
+                                    }
                                     "add_phone" -> {
                                         val number = normalizePhone(value)
                                         if (number.matches(Regex("""0\d{8,12}"""))) {
@@ -701,8 +730,10 @@ private fun CrmHome(initialRecordId: Long) {
                                                     it.title == title
                                             }
                                             if (!duplicate) {
+                                                val lead = action.optInt("remind_days_before", 0)
+                                                    .coerceIn(0, 7)
                                                 val id = db.addReminder(sourceEntryId,
-                                                    title.take(160), due, 0)
+                                                    title.take(160), due, lead)
                                                 db.allReminders().firstOrNull { it.id == id }
                                                     ?.let { ReminderScheduler.schedule(context, it) }
                                                 needVoiceNotificationPermission = true
@@ -724,7 +755,8 @@ private fun CrmHome(initialRecordId: Long) {
                                                 ?: old.title
                                             if (due != null && db.updateReminder(old.id,
                                                     sourceEntryId, title.take(160), due,
-                                                    old.remindDaysBefore)) {
+                                                    action.optInt("remind_days_before",
+                                                        old.remindDaysBefore).coerceIn(0,7))) {
                                                 ReminderScheduler.cancel(context, old.id)
                                                 db.allReminders().firstOrNull { it.id == old.id }
                                                     ?.let { ReminderScheduler.schedule(context, it) }
@@ -1653,6 +1685,8 @@ private fun CrmHome(initialRecordId: Long) {
                     value = note,
                     onValueChange = {
                         note = it
+                        if (pendingVoiceTranscript.isNotBlank())
+                            pendingVoiceTranscript = it.takeLast(10000)
                         save(newNote = it)
                     },
                     label = { Text("چه چیزی درباره مجموعه می‌دونی؟") },
