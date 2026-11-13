@@ -149,6 +149,7 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
     var showCallHistory by rememberSaveable { mutableStateOf(false) }
     var showAllGroups by rememberSaveable { mutableStateOf(false) }
     var showAllRoles by rememberSaveable { mutableStateOf(false) }
+    var roleMenuOpen by remember { mutableStateOf(false) }
     var showDeveloperSettings by rememberSaveable { mutableStateOf(false) }
     var customCategories by remember {
         mutableStateOf(context.getSharedPreferences("crm_categories", Context.MODE_PRIVATE)
@@ -1807,12 +1808,35 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                 if (showExtraDetails) {
                     Row(Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(
-                            value = contactRole,
-                            onValueChange = { contactRole = it; save() },
-                            label = { Text("سمت شخص") }, singleLine = true,
-                            modifier = Modifier.weight(1f)
-                        )
+                        Box(Modifier.weight(1f)) {
+                            OutlinedTextField(
+                                value = contactRole,
+                                onValueChange = { contactRole = it; save() },
+                                label = { Text("سمت شخص") }, singleLine = true,
+                                trailingIcon = {
+                                    IconButton(onClick = { roleMenuOpen = true }) {
+                                        Text("⌄")
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            DropdownMenu(expanded = roleMenuOpen,
+                                onDismissRequest = { roleMenuOpen = false }) {
+                                (listOf("مدیرعامل", "مدیر مجموعه", "مدیر فروش",
+                                    "مالک", "مهندس معمار", "مهندس ساختمان",
+                                    "مسئول خرید", "کارشناس فروش", "کارمند") +
+                                    allEntries.map { it.role }.filter { it.isNotBlank() })
+                                    .distinct().take(20).forEach { role ->
+                                        DropdownMenuItem(
+                                            text = { Text(role) },
+                                            onClick = {
+                                                contactRole = role
+                                                save()
+                                                roleMenuOpen = false
+                                            })
+                                    }
+                            }
+                        }
                         OutlinedTextField(
                             value = contactCategory,
                             onValueChange = { contactCategory = it; save() },
@@ -2169,9 +2193,9 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
             if (showAllRoles) {
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                    (listOf("همه سمت‌ها") +
+                    (listOf("همه سمت‌ها", "مدیریت") +
                         allEntries.mapNotNull { it.role.takeIf(String::isNotBlank) })
-                        .distinct().sorted().forEach { role ->
+                        .distinct().forEach { role ->
                         FilterChip(selected = filterRole == role,
                             onClick = { filterRole = role; showAllRoles = false },
                             label = { Text(role) })
@@ -2183,7 +2207,9 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
             val filtered = allEntries.filter { entry ->
                 ContactReadiness.isComplete(entry.name, entry.phone) &&
                 (filterTag == "همه" || filterTag in entry.tags) &&
-                    (filterRole == "همه سمت‌ها" || filterRole == entry.role) &&
+                    (filterRole == "همه سمت‌ها" || filterRole == entry.role ||
+                        (filterRole == "مدیریت" &&
+                            ("مدیر" in entry.role || "مدیریت" in entry.role))) &&
                     (filterCategory == "همه گروه‌ها" || filterCategory == entry.category.ifBlank { "دسته‌بندی‌نشده" }) &&
                     (search.isBlank() || listOf(entry.name, entry.phone, entry.note, entry.company, entry.tags.joinToString())
                         .any { it.contains(search, ignoreCase = true) } ||
