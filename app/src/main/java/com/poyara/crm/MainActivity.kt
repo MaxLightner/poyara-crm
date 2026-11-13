@@ -852,6 +852,15 @@ private fun CrmHome(initialRecordId: Long) {
     }
 
     fun open(entry: ContactEntry) {
+        voiceFileReader?.cancel()
+        voiceFileReader = null
+        voiceTranscribing = false
+        pendingVoiceTranscript = ""
+        pendingVoiceFilePath = ""
+        pendingMeetingEntryId = 0L
+        showExtraDetails = false
+        showReminderDetails = false
+        showMapDetails = false
         recordId = entry.id
         personName = entry.name
         companyName = entry.company
@@ -876,6 +885,16 @@ private fun CrmHome(initialRecordId: Long) {
     }
 
     fun newEntry() {
+        voiceFileReader?.cancel()
+        voiceFileReader = null
+        voiceTranscribing = false
+        pendingVoiceTranscript = ""
+        pendingVoiceFilePath = ""
+        pendingMeetingEntryId = 0L
+        agentMessages = emptyList()
+        showExtraDetails = false
+        showReminderDetails = false
+        showMapDetails = false
         clearDraft()
         recordId = 0L
         personName = ""
