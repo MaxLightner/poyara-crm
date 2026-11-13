@@ -133,7 +133,7 @@ async def analyze_text(
                 headers={"Authorization": f"Bearer {api_key}",
                          "Content-Type": "application/json"},
                 json={
-                    "model": os.getenv("POYARA_EXTRACTION_MODEL", "gpt-5-mini"),
+                    "model": os.getenv("POYARA_EXTRACTION_MODEL", "gpt-6-luna"),
                     "instructions": instructions,
                     "input": payload,
                     "store": False,
@@ -244,7 +244,7 @@ async def analyze(
                 f"{OPENAI_ENDPOINT}/responses",
                 headers={**headers, "Content-Type": "application/json"},
                 json={
-                    "model": os.getenv("POYARA_EXTRACTION_MODEL", "gpt-5-mini"),
+                    "model": os.getenv("POYARA_EXTRACTION_MODEL", "gpt-6-luna"),
                     "instructions": instructions,
                     "input": prompt,
                     "store": False,
