@@ -989,9 +989,7 @@ private fun CrmHome(initialRecordId: Long) {
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { allowed ->
-        if (allowed) {
-            if (googleVoiceMode) beginGoogleDictation() else beginRecording()
-        }
+        if (allowed) beginRecording()
         else {
             recordingError = "برای ضبط صدا، مجوز میکروفون را در تنظیمات گوشی فعال کن."
             Toast.makeText(context, recordingError, Toast.LENGTH_LONG).show()
@@ -1700,6 +1698,10 @@ private fun CrmHome(initialRecordId: Long) {
                         }
                     }
                 }
+                TextButton(onClick = { showMapDetails = !showMapDetails }) {
+                    Text(if (showMapDetails) "بستن نقشه ▲" else "⌖ موقعیت و نقشه ▼")
+                }
+                if (showMapDetails) {
                 Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFE3F3EF))) {
                     Column(
                         modifier = Modifier.fillMaxWidth().padding(12.dp),
@@ -1751,9 +1753,14 @@ private fun CrmHome(initialRecordId: Long) {
                         }
                     }
                 }
+                }
 
                 if (files.isNotEmpty()) {
-                    Text("پیوست‌ها (${files.size})", fontWeight = FontWeight.Bold)
+                    TextButton(onClick = { showAttachments = !showAttachments }) {
+                        Text(if (showAttachments) "بستن پیوست‌ها ▲"
+                            else "پیوست‌ها (${files.size}) ▼")
+                    }
+                    if (showAttachments) {
                     files.forEachIndexed { index, attachment ->
                         OutlinedButton(
                             onClick = {
@@ -1768,9 +1775,10 @@ private fun CrmHome(initialRecordId: Long) {
                             Text("${index + 1}. $label")
                         }
                     }
+                    }
                 }
 
-                if (additionalNotes.isNotEmpty()) {
+                if (showExtraDetails && additionalNotes.isNotEmpty()) {
                     Text("یادداشت‌های قدیمی پرونده", fontWeight = FontWeight.SemiBold)
                     additionalNotes.forEach { item ->
                         Text(item.text, modifier = Modifier.fillMaxWidth().padding(8.dp),
@@ -1778,7 +1786,7 @@ private fun CrmHome(initialRecordId: Long) {
                     }
                 }
 
-                if (recordId > 0L) {
+                if (showExtraDetails && recordId > 0L) {
                     val events = db.callEvents(recordId)
                     if (events.isNotEmpty()) {
                         Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
@@ -1793,6 +1801,7 @@ private fun CrmHome(initialRecordId: Long) {
                     }
                 }
 
+                if (showExtraDetails) {
                 Text("برچسب‌ها", fontWeight = FontWeight.SemiBold)
                 Row(
                     Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -1810,8 +1819,14 @@ private fun CrmHome(initialRecordId: Long) {
                         )
                     }
                 }
+                }
 
-                ReminderComposer(
+                TextButton(onClick = { showReminderDetails = !showReminderDetails }) {
+                    val number = db.allReminders().count { it.entryId == recordId }
+                    Text(if (showReminderDetails) "بستن قرارها ▲"
+                        else "▤ قرار و یادآوری ($number) ▼")
+                }
+                if (showReminderDetails) ReminderComposer(
                     db = db,
                     entryId = recordId,
                     refreshKey = reminderRevision,
