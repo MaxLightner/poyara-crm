@@ -518,7 +518,7 @@ private fun CrmHome(initialRecordId: Long) {
                                     if (personName.isBlank() && proposedName.isNotBlank()) personName = proposedName
                                     if (companyName.isBlank() && clean("company").isNotBlank()) companyName = clean("company")
                                     val proposedNumber = normalizePhone(clean("phone"))
-                                    if (phone.isBlank() && proposedNumber.matches(Regex("""0\\d{9,10}"""))) phone = proposedNumber
+                                    if (phone.isBlank() && proposedNumber.matches(Regex("""0\d{9,10}"""))) phone = proposedNumber
                                     if (contactRole.isBlank() && clean("role").isNotBlank()) contactRole = clean("role")
                                     if (contactCategory.isBlank() && clean("category").isNotBlank()) contactCategory = clean("category")
                                     if (contactRole.contains("مدیر") || contactRole.contains("مدیریت"))
@@ -934,9 +934,11 @@ private fun CrmHome(initialRecordId: Long) {
         googleSyncBusy = true
         coroutineScope.launch {
             val outcome = withContext(Dispatchers.IO) {
-                runCatching { GoogleContactsBridge(context.applicationContext,
-                    CrmDb(context.applicationContext).also { /* separate DB connection */ })
-                    .sync(googleAccount) }
+                runCatching {
+                    CrmDb(context.applicationContext).use { syncDb ->
+                        GoogleContactsBridge(context.applicationContext, syncDb).sync(googleAccount)
+                    }
+                }
             }
             googleSyncBusy = false
             outcome.onSuccess { result ->
