@@ -153,7 +153,8 @@ Return empty arrays for no suggested changes.
             .put("temperature", 0)
             .put("max_completion_tokens", 2400)
             .put("stream", false)
-            .put("response_format", JSONObject().put("type", "json_object"))
+            // GLM 4.7 Flash is not listed among JSON Mode guaranteed models.
+            // Use a strict JSON-only system instruction and validate the response.
             .put("messages", JSONArray()
                 .put(JSONObject().put("role", "system").put("content",
                     instructions + "\nOutput ONLY JSON matching the schema.\n" +
