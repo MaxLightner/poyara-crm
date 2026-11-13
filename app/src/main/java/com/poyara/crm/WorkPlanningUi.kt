@@ -66,6 +66,31 @@ fun ReminderComposer(
             verticalArrangement = Arrangement.spacedBy(9.dp)
         ) {
             Text("یادآوری و قرار کاری", fontWeight = FontWeight.Bold)
+            // Existing events first: delete/edit are never buried underneath the save FAB.
+            if (existing.isNotEmpty()) {
+                Text("قرارهای ثبت‌شده برای این مخاطب", fontWeight = FontWeight.SemiBold)
+                existing.forEach { reminder ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(reminder.title, fontWeight = FontWeight.Medium)
+                            Text(
+                                SimpleDateFormat("EEE d MMM · HH:mm", Locale("fa", "IR")).format(Date(reminder.dueAt)),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.secondary
+                            )
+                        }
+                        TextButton(onClick = {
+                            ReminderScheduler.cancel(context, reminder.id)
+                            db.deleteReminder(reminder.id)
+                            onSaved()
+                        }) { Text("حذف") }
+                    }
+                }
+            }
+            if (existing.isNotEmpty()) {
+                androidx.compose.material3.HorizontalDivider()
+                Text("افزودن قرار جدید", style = MaterialTheme.typography.titleSmall)
+            }
             OutlinedButton(
                 onClick = {
                     val now = Calendar.getInstance()
@@ -149,26 +174,7 @@ fun ReminderComposer(
                 modifier = Modifier.fillMaxWidth()
             ) { Text("ثبت یادآوری") }
 
-            if (existing.isNotEmpty()) {
-                Text("قرارهای ثبت‌شده برای این مخاطب", fontWeight = FontWeight.SemiBold)
-                existing.forEach { reminder ->
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text(reminder.title, fontWeight = FontWeight.Medium)
-                            Text(
-                                SimpleDateFormat("EEE d MMM · HH:mm", Locale("fa", "IR")).format(Date(reminder.dueAt)),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.secondary
-                            )
-                        }
-                        TextButton(onClick = {
-                            ReminderScheduler.cancel(context, reminder.id)
-                            db.deleteReminder(reminder.id)
-                            onSaved()
-                        }) { Text("حذف") }
-                    }
-                }
-            }
+
         }
     }
 }
@@ -200,6 +206,7 @@ fun WeeklyAgenda(
             all.filter { it.dueAt >= week.first && it.dueAt < week.second }
         else
             all.filter { it.dueAt >= System.currentTimeMillis() - 12 * 60 * 60 * 1000L }
+                .sortedBy { it.dueAt }
     }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("برنامه کاری", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
@@ -263,8 +270,17 @@ fun WeeklyAgenda(
                                         color = MaterialTheme.colorScheme.primary)
                                 }
                             }
-                            if (contact != null) {
-                                TextButton(onClick = { onOpenContact(contact) }) { Text("پرونده") }
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                if (contact != null) {
+                                    TextButton(onClick = { onOpenContact(contact) }) {
+                                        Text("پرونده")
+                                    }
+                                }
+                                TextButton(onClick = {
+                                    ReminderScheduler.cancel(context, reminder.id)
+                                    db.deleteReminder(reminder.id)
+                                    onChanged()
+                                }) { Text("حذف", color = MaterialTheme.colorScheme.error) }
                             }
                         }
                     }
