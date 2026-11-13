@@ -199,8 +199,12 @@ internal object PersianVoiceInterpreter {
         val appointmentCorrection = correcting &&
             (Regex("""(?:ساعت|زمان|روز|تاریخ)\s*(?:قرار|جلسه|تماس)|(?:قرار|جلسه|تماس).{0,45}(?:اشتباه|غلط|اصلاح|تغییر|درستش)""")
                 .containsMatchIn(text))
-        val timeMatch = Regex("""ساعت\s*([0-9]{1,2}|[\p{L}]+)(?:[:٫.]([0-9]{1,2}))?""")
-            .find(text)
+        val timeMatch = Regex("""ساعت\s*(?:(?:درست|جدید|اصلاح شده)\s*)?([0-9]{1,2}|[\p{L}]+)(?:[:٫.]([0-9]{1,2}))?""")
+            .findAll(text)
+            .firstOrNull { match ->
+                val word = match.groupValues[1]
+                word.toIntOrNull() != null || spokenDigits.containsKey(word)
+            }
         val hourWord = timeMatch?.groupValues?.getOrNull(1)
         var hour = hourWord?.toIntOrNull() ?: hourWord?.let { spokenDigits[it] }
         var minute = timeMatch?.groupValues?.getOrNull(2)?.toIntOrNull() ?: 0
