@@ -29,14 +29,17 @@ jobs:
 
   deploy:
     needs: tests
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && vars.POYARA_CLOUD_BACKEND_ENABLED == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: cloudflare/wrangler-action@v4
-        if: ${{ vars.POYARA_CLOUD_BACKEND_ENABLED == 'true' }}
+      - name: Deploy central Worker and app-scoped access key
+        uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: cloudflare-worker
           command: deploy
+          secrets: |
+            POYARA_APP_ACCESS_KEY
+        env:
+          POYARA_APP_ACCESS_KEY: ${{ secrets.POYARA_APP_ACCESS_KEY }}
