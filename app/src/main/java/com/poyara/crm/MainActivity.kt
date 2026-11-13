@@ -140,6 +140,7 @@ private fun CrmHome(initialRecordId: Long) {
     var showCallHistory by rememberSaveable { mutableStateOf(false) }
     var showAllGroups by rememberSaveable { mutableStateOf(false) }
     var showAllRoles by rememberSaveable { mutableStateOf(false) }
+    var showDeveloperSettings by rememberSaveable { mutableStateOf(false) }
     var customCategories by remember {
         mutableStateOf(context.getSharedPreferences("crm_categories", Context.MODE_PRIVATE)
             .getStringSet("names", emptySet()).orEmpty().toSet())
@@ -1422,6 +1423,15 @@ private fun CrmHome(initialRecordId: Long) {
                             Text("با ارسال متن گفتار مشتری برای تحلیل ابری موافقم",
                                 style = MaterialTheme.typography.bodySmall)
                         }
+                        Text(if (textAgentSettings.configured)
+                            "اتصال سرور Gemini روی این گوشی ذخیره شده است"
+                        else "سرور Gemini هنوز توسط مدیر راه‌اندازی نشده است",
+                            style = MaterialTheme.typography.bodySmall)
+                        TextButton(onClick = { showDeveloperSettings = !showDeveloperSettings }) {
+                            Text(if (showDeveloperSettings) "بستن تنظیمات توسعه‌دهنده"
+                                else "اتصال پیشرفته (مدیر سیستم)")
+                        }
+                        if (showDeveloperSettings) {
                         OutlinedTextField(value = agentUrl, onValueChange = { agentUrl = it },
                             label = { Text("آدرس HTTPS سرور Agent") },
                             singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -1454,6 +1464,7 @@ private fun CrmHome(initialRecordId: Long) {
                                     agentOptIn = value && agentPrivacyConsent
                                     agentPrefs.edit().putBoolean("enabled", agentOptIn).apply()
                                 })
+                        }
                         }
                         if (agentBusy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                         agentMessages.forEach { message ->
