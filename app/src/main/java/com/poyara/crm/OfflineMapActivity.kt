@@ -58,6 +58,9 @@ class OfflineMapActivity : ComponentActivity() {
     private var selectedEntryId = 0L
     private var allowPick = false
     private var previewOnly = false
+    private var previewLatitude: Double? = null
+    private var previewLongitude: Double? = null
+    private var previewLabel: String = "موقعیت مجموعه"
     private var currentTag = "همه"
     private var radiusMeters = 2000
     private var nearbyOrigin: Location? = null
@@ -103,6 +106,12 @@ class OfflineMapActivity : ComponentActivity() {
         selectedEntryId = intent.getLongExtra("entry_id", 0L)
         allowPick = intent.getBooleanExtra("allow_pick_location", false)
         previewOnly = intent.getBooleanExtra("preview_only", false)
+        if (intent.hasExtra("preview_latitude") && intent.hasExtra("preview_longitude")) {
+            previewLatitude = intent.getDoubleExtra("preview_latitude", Double.NaN).takeIf { it in -90.0..90.0 }
+            previewLongitude = intent.getDoubleExtra("preview_longitude", Double.NaN).takeIf { it in -180.0..180.0 }
+        }
+        previewLabel = intent.getStringExtra("preview_label")?.trim()?.take(90)
+            ?.takeIf { it.isNotBlank() } ?: "موقعیت مجموعه"
 
         // OSM public tiles: only user-visible tiles are fetched, with an identifying
         // User-Agent and copyright attribution. There is no offline bulk download.
@@ -137,6 +146,20 @@ class OfflineMapActivity : ComponentActivity() {
         if (!previewOnly) enableMapTap()
         showPins()
         updateStatus()
+        // When showing a draft coordinate, there may be no saved CRM entry yet.
+        // Keep the map centered on the exact selected point and open its label.
+        if (previewOnly) {
+            val lat = previewLatitude ?: starting?.latitude
+            val lon = previewLongitude ?: starting?.longitude
+            if (lat != null && lon != null) {
+                mapView.post {
+                    mapView.controller.setZoom(17.0)
+                    mapView.controller.setCenter(GeoPoint(lat, lon))
+                    pins.firstOrNull()?.showInfoWindow()
+                    mapView.invalidate()
+                }
+            }
+        }
         // A contact preview must remain centered on the saved location, NOT GPS.
         if (!previewOnly && starting == null && !intent.hasExtra("preview_latitude")) {
             locationAction = "center"
@@ -173,7 +196,8 @@ class OfflineMapActivity : ComponentActivity() {
             showPins()
             updateStatus()
         })
-        header.addView(filters)
+        if (!previewOnly) header.addView(filters)
+        else header.addView(makeButton("بازگشت به پرونده") { finish() })
         root.addView(header, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
 
         val bottom = LinearLayout(this).apply {
@@ -197,7 +221,7 @@ class OfflineMapActivity : ComponentActivity() {
                 locateWithPermission()
             })
         }
-        bottom.addView(actions)
+        if (!previewOnly) bottom.addView(actions)
         radiusButton = makeButton("شعاع ۲ کیلومتر") {
             radiusMeters = when (radiusMeters) {
                 500 -> 2000
@@ -214,7 +238,7 @@ class OfflineMapActivity : ComponentActivity() {
                 updateStatus()
             }
         }
-        bottom.addView(radiusButton)
+        if (!previewOnly) bottom.addView(radiusButton)
         bottom.addView(TextView(this).apply {
             text = "© OpenStreetMap contributors · فقط بخش‌های دیده‌شده نقشه دریافت و کش می‌شوند"
             textSize = 10f
@@ -252,7 +276,7 @@ class OfflineMapActivity : ComponentActivity() {
         val count = visibleContacts().size
         status.text = when {
             previewOnly ->
-                "موقعیت ثبت‌شده مشتری روی نقشه · برای تغییر موقعیت به پرونده برگرد"
+                previewLabel + " · موقعیت انتخاب‌شده روی نقشه بزرگ"
             selectedEntryId > 0 || allowPick ->
                 "برای ثبت موقعیت، روی نقشه بزن یا «ثبت GPS» را انتخاب کن"
             nearbyOrigin != null ->
@@ -264,6 +288,35 @@ class OfflineMapActivity : ComponentActivity() {
     private fun showPins() {
         pins.forEach { mapView.overlays.remove(it) }
         pins.clear()
+
+        if (previewOnly) {
+            // The preview may be a not-yet-saved location. Never infer a marker
+            // from the entire CRM collection or silently substitute GPS.
+            val saved = db.all().firstOrNull { it.id == selectedEntryId }
+            val lat = previewLatitude ?: saved?.latitude
+            val lon = previewLongitude ?: saved?.longitude
+            if (lat != null && lon != null) {
+                val label = previewLabel.takeIf { it != "موقعیت مجموعه" }
+                    ?: saved?.company?.ifBlank { saved.name }?.takeIf { it.isNotBlank() }
+                    ?: "موقعیت مجموعه"
+                val pin = Marker(mapView).apply {
+                    position = GeoPoint(lat, lon)
+                    title = label
+                    icon = circleIcon(Color.rgb(11, 130, 98), 30)
+                    setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+                    setOnMarkerClickListener { marker, _ ->
+                        marker.showInfoWindow()
+                        true
+                    }
+                }
+                pins += pin
+                mapView.overlays.add(pin)
+                mapView.post { if (pins.contains(pin)) pin.showInfoWindow() }
+            }
+            mapView.invalidate()
+            return
+        }
+
         val groups = visibleContacts().groupBy { entry ->
             val company = entry.groupId?.toString() ?: entry.company.ifBlank { entry.id.toString() }
             company + ":" + String.format(
@@ -274,7 +327,9 @@ class OfflineMapActivity : ComponentActivity() {
             val first = group.first()
             val pin = Marker(mapView).apply {
                 position = GeoPoint(first.latitude!!, first.longitude!!)
-                title = first.name.ifBlank { first.company.ifBlank { first.phone } }
+                title = first.company.ifBlank { first.name }.ifBlank {
+                    first.note.lineSequence().firstOrNull().orEmpty().take(60)
+                }.ifBlank { "پرونده بدون عنوان" }
                 icon = circleIcon(Color.rgb(11, 130, 98), 25)
                 setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
                 setOnMarkerClickListener { _, _ ->

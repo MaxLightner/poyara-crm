@@ -36,11 +36,13 @@ internal fun ContactMapPreview(latitude: Double, longitude: Double, title: Strin
             controller.setZoom(16.5)
             val coordinate = GeoPoint(latitude, longitude)
             controller.setCenter(coordinate)
-            overlays.add(Marker(this).apply {
+            val pin = Marker(this).apply {
                 position = coordinate
-                this.title = title
+                this.title = title.ifBlank { "موقعیت مجموعه" }
                 setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-            })
+            }
+            overlays.add(pin)
+            post { pin.showInfoWindow() }
             setOnTouchListener { _, _ -> true } // static thumbnail; full map button below
         }
     }

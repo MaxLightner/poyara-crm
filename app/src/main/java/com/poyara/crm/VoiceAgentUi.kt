@@ -38,7 +38,6 @@ internal fun VoiceAgentPanel(
     var openPath by remember { mutableStateOf<String?>(null) }
     var editableText by remember { mutableStateOf("") }
     var reload by remember { mutableIntStateOf(0) }
-    var showServerInfo by remember { mutableStateOf(false) }
 
     DisposableEffect(Unit) {
         onDispose { transcriberState.value?.cancel() }
@@ -93,15 +92,17 @@ internal fun VoiceAgentPanel(
         }
     }
 
+    if (audioPaths.isEmpty()) return
+
     Card {
         Column(
             Modifier.fillMaxWidth().padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(9.dp)
         ) {
-            Text("تبدیل خودکار ویس به متن", fontWeight = FontWeight.Bold)
+            Text("فایل‌های صوتی ذخیره‌شده", fontWeight = FontWeight.Bold)
             Text(
-                "با پایان ضبط، تبدیل به متن خودکار آغاز می‌شود و نتیجه در «هرچه درباره مخاطب می‌دانی» نوشته می‌شود. " +
-                    "تشخیص فایل فارسی به سرویس گفتار نصب‌شده روی گوشی بستگی دارد.",
+                "این فایل‌ها برای نگهداری صوت هستند. در برخی گوشی‌ها گوگل فایل آماده را نمی‌خواند؛ " +
+                    "برای تبدیل قابل‌آزمایش، از حالت «گوگل · متن» در بالای صفحه استفاده کن.",
                 color = MaterialTheme.colorScheme.secondary,
                 style = MaterialTheme.typography.bodySmall
             )
@@ -156,29 +157,7 @@ internal fun VoiceAgentPanel(
                 Text(failure, color = MaterialTheme.colorScheme.error,
                     style = MaterialTheme.typography.bodySmall)
             }
-            OutlinedButton(onClick = { showServerInfo = true },
-                modifier = Modifier.fillMaxWidth()) {
-                Text("ارسال به سرور و پردازش")
-            }
-            Text("فعلاً ارسال به سرور غیرفعال است و هیچ ویسی منتقل نمی‌شود.",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.secondary)
         }
-    }
-
-    if (showServerInfo) {
-        AlertDialog(
-            onDismissRequest = { showServerInfo = false },
-            title = { Text("پردازش روی سرور") },
-            text = { Text(
-                "دکمه آماده شده، اما ارسال واقعی هنوز فعال نیست. " +
-                    "وقتی مشخص کردی پردازش سرور چگونه انجام شود، آن را متصل می‌کنیم. " +
-                    "فعلاً صوت‌ها فقط روی گوشی ذخیره می‌شوند."
-            ) },
-            confirmButton = { TextButton(onClick = { showServerInfo = false }) {
-                Text("متوجه شدم")
-            } }
-        )
     }
 
     if (openPath != null) {
