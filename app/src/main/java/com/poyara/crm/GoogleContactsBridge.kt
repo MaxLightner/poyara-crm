@@ -63,7 +63,10 @@ internal class GoogleContactsBridge(private val context: Context, private val db
             }
         }
         for (entry in db.all()) {
-            if (entry.name.isBlank() && entry.phone.isBlank()) { skipped++; continue }
+            if (!ContactReadiness.isComplete(entry.name, entry.phone)) {
+                skipped++
+                continue // Never upload old note-only/ASR-failure drafts as Google contacts.
+            }
             val remote = bySyncId[entry.syncId]
             if (remote == null || entry.updatedAt > remote.payload.optLong("updated_at")) {
                 upsert(accountName, entry, remote?.rawId)
