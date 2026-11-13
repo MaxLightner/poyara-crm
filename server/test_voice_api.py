@@ -52,14 +52,27 @@ class VoiceApiTests(unittest.TestCase):
                 json={"transcript": "فردا ساعت ۱۴:۳۰ جلسه دارم"})
             self.assertEqual(response.status_code, 401)
 
-    def test_text_agent_requires_server_model_key(self):
+    def test_text_agent_requires_free_gemini_key(self):
         with patch.dict(os.environ, {
             "POYARA_VOICE_TOKEN": "a" * 40,
-            "OPENAI_API_KEY": ""
+            "POYARA_TEXT_PROVIDER": "gemini",
+            "GEMINI_API_KEY": "",
+            "OPENAI_API_KEY": "",
         }):
             response = self.client.post("/v1/text/analyze",
                 headers={"Authorization": "Bearer " + "a" * 40},
                 json={"transcript": "آقای حسینی مدیر مبلمان لیپاریس است"})
+            self.assertEqual(response.status_code, 503)
+
+    def test_paid_provider_not_selected_implicitly(self):
+        with patch.dict(os.environ, {
+            "POYARA_VOICE_TOKEN": "a" * 40,
+            "POYARA_TEXT_PROVIDER": "no-such-provider",
+            "OPENAI_API_KEY": "should-never-be-used",
+        }):
+            response = self.client.post("/v1/text/analyze",
+                headers={"Authorization": "Bearer " + "a" * 40},
+                json={"transcript": "آقای حسینی مدیر لیپاریس است"})
             self.assertEqual(response.status_code, 503)
 
     def test_agent_schema_has_industry_category(self):
