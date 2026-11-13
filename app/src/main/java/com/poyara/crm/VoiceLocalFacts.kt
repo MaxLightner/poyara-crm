@@ -24,6 +24,25 @@ internal object VoiceLocalFacts {
             }
         }
     }
+    /**
+     * A deterministic, conservative local summary for the ONE capture textbox.
+     * It is not an AI agent. Always preserve every word of the transcription.
+     * Never assign a phone to a person when several people are mentioned.
+     */
+    fun formatForCapture(transcript: String): String {
+        val spoken = transcript.trim()
+        if (spoken.isBlank()) return ""
+        val fact = extract(spoken)
+        val overview = buildList {
+            if (fact.personName.isNotBlank()) add("شخص: " + fact.personName)
+            if (fact.company.isNotBlank()) add("مجموعه: " + fact.company)
+            if (fact.phone.isNotBlank()) add("شماره: " + fact.phone)
+        }
+        return if (overview.isEmpty()) "متن گفتار:\n" + spoken
+        else "اطلاعات شناسایی‌شده (نیازمند بررسی):\n" +
+            overview.joinToString("\n") + "\n\nمتن گفتار:\n" + spoken
+    }
+
     fun extract(transcript: String): VoiceQuickFields {
         val normalized = digitsLatin(transcript).replace('ي','ی').replace('ك','ک')
         val numbers = Regex("(?<![0-9])(?:\\+?98|0)?9[0-9\\s-]{9,16}(?![0-9])")
