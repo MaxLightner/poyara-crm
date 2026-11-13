@@ -69,7 +69,7 @@ internal fun VoiceAgentPanel(
                     if (automatic) {
                         onTranscribed(text)
                         Toast.makeText(context,
-                            "متن به «هرچه درباره مخاطب می‌دانی» اضافه شد",
+                            "متن صوت به کادر اصلی اضافه شد",
                             Toast.LENGTH_LONG).show()
                     } else {
                         openTranscript(path)
@@ -182,7 +182,6 @@ internal fun VoiceAgentPanel(
     }
 
     if (openPath != null) {
-        val recognized = VoiceLocalFacts.extract(editableText)
         AlertDialog(
             onDismissRequest = { openPath = null },
             title = { Text("بازبینی متن ویس") },
@@ -193,8 +192,7 @@ internal fun VoiceAgentPanel(
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Text(
-                        "متن را بررسی و اصلاح کن. پویارا فقط اطلاعات واضح را به فرم پیشنهاد می‌دهد؛ " +
-                            "برای چند مخاطب یا قرار پیچیده فعلاً متن کامل در یادداشت نگه داشته می‌شود.",
+                        "متن را بررسی و اصلاح کن. بعد از تأیید، تمام گفتار و خلاصه اطلاعات روشن در یک کادر اصلی ذخیره می‌شود.",
                         style = MaterialTheme.typography.bodySmall
                     )
                     OutlinedTextField(
@@ -203,11 +201,6 @@ internal fun VoiceAgentPanel(
                         modifier = Modifier.fillMaxWidth().heightIn(min = 160.dp),
                         label = { Text("متن قابل ویرایش") }
                     )
-                    HorizontalDivider()
-                    Text("اطلاعات قابل تشخیص:", fontWeight = FontWeight.SemiBold)
-                    Text("نام: " + recognized.personName.ifBlank { "نامشخص" })
-                    Text("شرکت: " + recognized.company.ifBlank { "نامشخص" })
-                    Text("شماره: " + recognized.phone.ifBlank { "نامشخص یا چند شماره" })
                 }
             },
             confirmButton = {
@@ -219,8 +212,8 @@ internal fun VoiceAgentPanel(
                     }
                     if (editableText.isNotBlank()) onTranscribed(editableText)
                     openPath = null
-                    Toast.makeText(context, "متن به فرم منتقل شد؛ موارد را بازبینی کن", Toast.LENGTH_LONG).show()
-                }) { Text("انتقال به فرم") }
+                    Toast.makeText(context, "متن به کادر اصلی اضافه شد", Toast.LENGTH_LONG).show()
+                }) { Text("افزودن به کادر اصلی") }
             },
             dismissButton = {
                 TextButton(onClick = {

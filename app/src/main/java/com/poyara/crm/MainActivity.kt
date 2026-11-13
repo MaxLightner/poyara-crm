@@ -250,7 +250,8 @@ private fun CrmHome(initialRecordId: Long) {
         newGroupId: Long = selectedGroupId
     ): Long {
         val tags = newTags + inferredTags(newNote)
-        if (recordId == 0L && (newName.isBlank() || newPhone.isBlank())) {
+        if (recordId == 0L && newNote.isBlank() && newName.isBlank() &&
+            newCompany.isBlank() && newPhone.isBlank()) {
             persistDraft(newName, newPhone, newNote, tags, newCompany, newGroupId)
             return 0L
         }
@@ -273,8 +274,8 @@ private fun CrmHome(initialRecordId: Long) {
 
     fun ensureRecord(): Long {
         if (recordId == 0L) {
-            if (personName.isBlank() || phone.isBlank()) {
-                Toast.makeText(context, "برای ثبت پرونده، نام و شماره تماس را وارد کن", Toast.LENGTH_SHORT).show()
+            if (note.isBlank() && personName.isBlank() && companyName.isBlank() && phone.isBlank()) {
+                Toast.makeText(context, "ابتدا چیزی در کادر اصلی بنویس یا ضبط کن", Toast.LENGTH_SHORT).show()
                 return 0L
             }
             val tags = chosenTags + inferredTags(note)
@@ -336,7 +337,7 @@ private fun CrmHome(initialRecordId: Long) {
             smsBody = db.smsDraft(recordId)
             page = "messages"
         } else {
-            Toast.makeText(context, "ابتدا نام و شماره تماس را وارد کن", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "ابتدا اطلاعات پرونده را ثبت کن", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -660,7 +661,8 @@ private fun CrmHome(initialRecordId: Long) {
                 companyName.isNotBlank() || phone.isNotBlank() || note.isNotBlank() ||
                 draftAttachments.isNotEmpty() || draftLatitude != null || recordId > 0L
             if (page == "capture" && hasAnyInformation) {
-                val canComplete = personName.isNotBlank() && phone.isNotBlank()
+                val canComplete = !isRecording && pendingAutoTranscriptions.isEmpty() &&
+                    (note.isNotBlank() || (personName.isNotBlank() && phone.isNotBlank()))
                 FloatingActionButton(
                     modifier = Modifier.size(64.dp),
                     containerColor = if (canComplete) Color(0xFF087866) else Color(0xFFD9E5E3),
@@ -669,11 +671,13 @@ private fun CrmHome(initialRecordId: Long) {
                     onClick = {
                         if (!canComplete) {
                             Toast.makeText(
-                                context, "برای ثبت نهایی نام و شماره تماس را وارد کن",
+                                context, if (isRecording || pendingAutoTranscriptions.isNotEmpty())
+                                    "ضبط یا تبدیل صوت هنوز کامل نشده است"
+                                else "برای ثبت، چیزی در کادر اصلی بنویس یا ویس را تبدیل کن",
                                 Toast.LENGTH_SHORT
                             ).show()
                         } else if (save() > 0L) {
-                            Toast.makeText(context, "ثبت شد؛ مخاطب بعدی را وارد کن", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "ثبت شد؛ آماده پرونده بعدی", Toast.LENGTH_SHORT).show()
                             newEntry()
                         }
                     }
@@ -734,6 +738,24 @@ private fun CrmHome(initialRecordId: Long) {
                 Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                OutlinedTextField(
+                    value = note,
+                    onValueChange = {
+                        note = it
+                        save(newNote = it)
+                    },
+                    label = { Text("چه چیزی درباره مجموعه می‌دونی؟") },
+                    placeholder = {
+                        Text("هرچه می‌دانی بنویس یا با ضبط صوت بگو؛ نام‌ها، شماره‌ها، آدرس، جلسه‌ها و پیگیری‌ها...")
+                    },
+                    minLines = 11,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 260.dp)
+                )
+                Text(
+                    "این کادر خودکار ذخیره می‌شود؛ متن ویس و اطلاعات قابل تشخیص هم به همین‌جا اضافه می‌شود.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary
+                )
                 Card(colors = CardDefaults.cardColors(
                     containerColor = if (isRecording) Color(0xFFFFF0EC) else Color(0xFFE3F3EF)
                 )) {
@@ -782,126 +804,6 @@ private fun CrmHome(initialRecordId: Long) {
                         }
                     }
                 }
-                OutlinedTextField(
-                    value = personName,
-                    onValueChange = {
-                        personName = it
-                        save(newName = it)
-                    },
-                    label = { Text("نام شخص") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = companyName,
-                    onValueChange = {
-                        companyName = it
-                        save(newCompany = it)
-                    },
-                    label = { Text("نام مجموعه / برند") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = groupSearch,
-                    onValueChange = { groupSearch = it },
-                    label = { Text("اتصال به مجموعه یا مخاطب قبلی") },
-                    placeholder = { Text("نام مدیر، برند یا مجموعه را جست‌وجو کن") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                if (selectedGroupId > 0L) {
-                    val selectedRoot = allEntries.firstOrNull { it.id == selectedGroupId }
-                    Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFE3F3EF))) {
-                        Row(
-                            Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(Modifier.weight(1f)) {
-                                Text("عضو این مجموعه", fontWeight = FontWeight.Bold)
-                                Text(
-                                    selectedRoot?.company?.ifBlank { selectedRoot.name }
-                                        ?: "مخاطب مرتبط",
-                                    style = MaterialTheme.typography.bodySmall
-                                )
-                            }
-                            TextButton(onClick = {
-                                selectedGroupId = 0L
-                                save(newGroupId = 0L)
-                            }) { Text("لغو اتصال") }
-                        }
-                    }
-                } else if (groupSearch.isNotBlank()) {
-                    val candidates = allEntries.filter { entry ->
-                        listOf(entry.name, entry.company, entry.phone)
-                            .any { it.contains(groupSearch, ignoreCase = true) }
-                    }.take(5)
-                    if (candidates.isEmpty()) {
-                        Text("مخاطب یا مجموعه‌ای با این عبارت پیدا نشد.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.secondary)
-                    } else {
-                        candidates.forEach { candidate ->
-                            TextButton(
-                                onClick = {
-                                    val rootId = candidate.groupId ?: candidate.id
-                                    val root = allEntries.firstOrNull { it.id == rootId } ?: candidate
-                                    selectedGroupId = rootId
-                                    if (companyName.isBlank()) companyName = root.company
-                                    groupSearch = ""
-                                    save(newCompany = companyName, newGroupId = rootId)
-                                },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text(
-                                    listOf(candidate.name, candidate.company, candidate.phone)
-                                        .filter { it.isNotBlank() }.joinToString(" · "),
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                            }
-                        }
-                    }
-                }
-                OutlinedTextField(
-                    value = phone,
-                    onValueChange = {
-                        phone = it
-                        save(newPhone = it)
-                    },
-                    label = { Text("شماره تماس") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Text(
-                    "ذخیره خودکار فعاله؛ تیک برای ثبت و شروع مخاطب بعدی است.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.secondary
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = { callNumber(phone) },
-                        enabled = personName.isNotBlank() && phone.isNotBlank(),
-                        modifier = Modifier.weight(1f)
-                    ) { Text("☎ تماس") }
-                    OutlinedButton(
-                        onClick = { goToMessages() },
-                        enabled = personName.isNotBlank() && phone.isNotBlank(),
-                        modifier = Modifier.weight(1f)
-                    ) { Text("✉ پیامک") }
-                }
-                OutlinedTextField(
-                    value = note,
-                    onValueChange = {
-                        note = it
-                        save(newNote = it)
-                    },
-                    label = { Text("هرچه درباره مخاطب می‌دانی") },
-                    placeholder = { Text("رضایی، مالک مبلمان آریا؛ دموی چیدو را دید، هفته بعد تماس بگیرم...") },
-                    minLines = 5,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
                 Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFE3F3EF))) {
                     Column(
                         modifier = Modifier.fillMaxWidth().padding(12.dp),
@@ -955,25 +857,23 @@ private fun CrmHome(initialRecordId: Long) {
                             if (parts.size == 2 && parts[0] == "audio") parts[1] else null
                         },
                     onTranscribed = { transcript ->
-                        // Conservative form suggestions only: one unique person,
-                        // one company, or one unambiguous mobile number per note.
-                        // Existing CRM values are never overwritten by speech.
-                        val extracted = VoiceLocalFacts.extract(transcript)
-                        val filledName = personName.ifBlank { extracted.personName }
-                        val filledCompany = companyName.ifBlank { extracted.company }
-                        val filledPhone = phone.ifBlank { extracted.phone }
-                        val updatedNote = if (note.contains(transcript)) note else
-                            listOf(note, transcript).filter { it.isNotBlank() }.joinToString("\n")
-                        personName = filledName
-                        companyName = filledCompany
-                        phone = filledPhone
-                        note = updatedNote
-                        save(
-                            newName = filledName,
-                            newPhone = filledPhone,
-                            newCompany = filledCompany,
-                            newNote = updatedNote
-                        )
+                        // Full speech and conservative local extraction go into the
+                        // SAME large textbox. Hidden legacy metadata is optional
+                        // and is only updated if a single unique fact is recognized.
+                        val facts = VoiceLocalFacts.extract(transcript)
+                        val section = VoiceLocalFacts.formatForCapture(transcript)
+                        val combined = if (note.contains(transcript.trim())) note else
+                            listOf(note.trim(), section).filter { it.isNotBlank() }
+                                .joinToString("\n\n")
+                        val resolvedName = personName.ifBlank { facts.personName }
+                        val resolvedCompany = companyName.ifBlank { facts.company }
+                        val resolvedPhone = phone.ifBlank { facts.phone }
+                        personName = resolvedName
+                        companyName = resolvedCompany
+                        phone = resolvedPhone
+                        note = combined
+                        save(newName = resolvedName, newPhone = resolvedPhone,
+                            newCompany = resolvedCompany, newNote = combined)
                     }
                 )
 
@@ -995,33 +895,13 @@ private fun CrmHome(initialRecordId: Long) {
                     }
                 }
 
-                Text("یادداشت‌های تکمیلی", fontWeight = FontWeight.SemiBold)
-                additionalNotes.forEachIndexed { index, item ->
-                    Card(Modifier.fillMaxWidth().clickable {
-                        editingNoteId = item.id
-                        noteDraft = item.text
-                    }) {
-                        Text(
-                            "${index + 1}. ${item.text.ifBlank { "یادداشت خالی" }}",
-                            modifier = Modifier.padding(12.dp),
-                            maxLines = 4
-                        )
+                if (additionalNotes.isNotEmpty()) {
+                    Text("یادداشت‌های قدیمی پرونده", fontWeight = FontWeight.SemiBold)
+                    additionalNotes.forEach { item ->
+                        Text(item.text, modifier = Modifier.fillMaxWidth().padding(8.dp),
+                            style = MaterialTheme.typography.bodySmall)
                     }
                 }
-                TextButton(onClick = {
-                    editingNoteId = 0L
-                    noteDraft = ""
-                }) { Text("+ یادداشت جدید") }
-                OutlinedTextField(
-                    value = noteDraft,
-                    onValueChange = {
-                        noteDraft = it
-                        saveAdditionalNote(it)
-                    },
-                    label = { Text(if (editingNoteId == 0L) "یادداشت تازه (ذخیره خودکار)" else "ویرایش یادداشت") },
-                    minLines = 2,
-                    modifier = Modifier.fillMaxWidth()
-                )
 
                 if (recordId > 0L) {
                     val events = db.callEvents(recordId)
@@ -1233,7 +1113,9 @@ private fun CrmHome(initialRecordId: Long) {
             ) {
                 filtered.groupBy { it.groupId ?: it.id }.forEach { (groupRootId, members) ->
                     val groupRoot = allEntries.firstOrNull { it.id == groupRootId } ?: members.first()
-                    val groupTitle = groupRoot.company.ifBlank { groupRoot.name }.ifBlank { "گروه مخاطبان" }
+                    val groupTitle = groupRoot.company.ifBlank { groupRoot.name }
+                        .ifBlank { groupRoot.note.lineSequence().firstOrNull().orEmpty().take(48) }
+                        .ifBlank { "پرونده بدون عنوان" }
                     item(key = "group_${groupRootId}") {
                         Text(
                             "${groupTitle} · ${members.size} نفر",
@@ -1257,13 +1139,19 @@ private fun CrmHome(initialRecordId: Long) {
                                     entry.name,
                                     fontWeight = FontWeight.Bold,
                                     style = MaterialTheme.typography.titleMedium
-                                )
+                                ) else if (entry.company.isBlank() && entry.note.isNotBlank()) {
+                                    Text(
+                                        entry.note.lineSequence().firstOrNull().orEmpty().take(64),
+                                        fontWeight = FontWeight.Bold,
+                                        style = MaterialTheme.typography.titleMedium
+                                    )
+                                }
                                 if (entry.company.isNotBlank()) Text(
                                     entry.company,
                                     color = MaterialTheme.colorScheme.primary,
                                     style = MaterialTheme.typography.labelMedium
                                 )
-                                Text(entry.phone.ifBlank { "بدون شماره" }, fontWeight = FontWeight.SemiBold)
+                                if (entry.phone.isNotBlank()) Text(entry.phone, fontWeight = FontWeight.SemiBold)
                                 if (entry.note.isNotBlank()) Text(
                                     entry.note,
                                     maxLines = 3,
@@ -1335,64 +1223,43 @@ private fun CrmHome(initialRecordId: Long) {
                 title = { Text("اطلاعات خوانده‌شده از کارت") },
                 text = {
                     Column(
-                        Modifier.fillMaxWidth().heightIn(max = 500.dp)
+                        Modifier.fillMaxWidth().heightIn(max = 480.dp)
                             .verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text("قبل از ثبت، موارد استخراج‌شده را بررسی و اصلاح کن.")
-                        OutlinedTextField(
-                            value = scanPersonName,
-                            onValueChange = { scanPersonName = it },
-                            label = { Text("نام شخص") },
-                            modifier = Modifier.fillMaxWidth()
+                        Text("نتیجه کارت بعد از تأیید به همان کادر بزرگ اطلاعات اضافه می‌شود؛ نیازی به پرکردن فیلد جدا نیست.")
+                        val lines = listOfNotNull(
+                            scanPersonName.trim().takeIf { it.isNotBlank() }?.let { "نام: " + it },
+                            scanCompany.trim().takeIf { it.isNotBlank() }?.let { "مجموعه: " + it },
+                            scanPhone.trim().takeIf { it.isNotBlank() }?.let { "شماره: " + it },
+                            scanAddress.trim().takeIf { it.isNotBlank() }?.let { "آدرس: " + it },
+                            scanEmail.trim().takeIf { it.isNotBlank() }?.let { "ایمیل: " + it },
+                            scanWebsite.trim().takeIf { it.isNotBlank() }?.let { "وب‌سایت: " + it },
+                            scanRawText.trim().takeIf { it.isNotBlank() }?.let { "متن کارت: " + it }
                         )
-                        OutlinedTextField(
-                            value = scanCompany,
-                            onValueChange = { scanCompany = it },
-                            label = { Text("نام مجموعه / برند") },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        OutlinedTextField(
-                            value = scanPhone,
-                            onValueChange = { scanPhone = it },
-                            label = { Text("شماره تماس") },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        OutlinedTextField(
-                            value = scanAddress,
-                            onValueChange = { scanAddress = it },
-                            label = { Text("آدرس") },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        OutlinedTextField(
-                            value = scanEmail,
-                            onValueChange = { scanEmail = it },
-                            label = { Text("ایمیل") },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        OutlinedTextField(
-                            value = scanWebsite,
-                            onValueChange = { scanWebsite = it },
-                            label = { Text("وب‌سایت") },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Text("متن تشخیص‌داده‌شده", fontWeight = FontWeight.SemiBold)
-                        Text(scanRawText, style = MaterialTheme.typography.bodySmall)
+                        Text(lines.joinToString("\n").ifBlank { "متنی از کارت خوانده نشد" })
                     }
                 },
                 confirmButton = {
                     TextButton(onClick = {
-                        personName = scanPersonName.trim()
-                        companyName = scanCompany.trim()
-                        phone = scanPhone.trim()
-                        val extracted = buildList {
-                            if (scanAddress.isNotBlank()) add("آدرس: ${scanAddress.trim()}")
-                            if (scanEmail.isNotBlank()) add("ایمیل: ${scanEmail.trim()}")
-                            if (scanWebsite.isNotBlank()) add("وب‌سایت: ${scanWebsite.trim()}")
-                            if (scanRawText.isNotBlank()) add("متن کارت: ${scanRawText.trim()}")
+                        val section = buildList {
+                            if (scanPersonName.isNotBlank()) add("نام: " + scanPersonName.trim())
+                            if (scanCompany.isNotBlank()) add("مجموعه: " + scanCompany.trim())
+                            if (scanPhone.isNotBlank()) add("شماره: " + scanPhone.trim())
+                            if (scanAddress.isNotBlank()) add("آدرس: " + scanAddress.trim())
+                            if (scanEmail.isNotBlank()) add("ایمیل: " + scanEmail.trim())
+                            if (scanWebsite.isNotBlank()) add("وب‌سایت: " + scanWebsite.trim())
+                            if (scanRawText.isNotBlank()) add("متن کارت: " + scanRawText.trim())
                         }.joinToString("\n")
-                        note = listOf(note.trim(), extracted).filter { it.isNotBlank() }
-                            .joinToString("\n\n")
+                        if (section.isNotBlank() && !note.contains(section)) {
+                            note = listOf(note.trim(), "اطلاعات کارت:\n" + section)
+                                .filter { it.isNotBlank() }.joinToString("\n\n")
+                        }
+                        // Preserve previous hidden metadata and fill only missing
+                        // values; the user sees one combined capture textbox.
+                        personName = personName.ifBlank { scanPersonName.trim() }
+                        companyName = companyName.ifBlank { scanCompany.trim() }
+                        phone = phone.ifBlank { scanPhone.trim() }
                         val savedId = save(
                             newName = personName,
                             newPhone = phone,
@@ -1407,7 +1274,7 @@ private fun CrmHome(initialRecordId: Long) {
                         }
                         pendingScanPhoto = null
                         showScanDialog = false
-                    }) { Text("استفاده از اطلاعات") }
+                    }) { Text("افزودن به کادر اصلی") }
                 },
                 dismissButton = {
                     TextButton(onClick = {
