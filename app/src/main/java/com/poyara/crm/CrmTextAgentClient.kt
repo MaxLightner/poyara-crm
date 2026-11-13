@@ -19,6 +19,7 @@ internal class CrmTextAgentClient(context: Context) {
         require(transcript.isNotBlank() && transcript.length <= 10000)
         val payload = JSONObject()
             .put("transcript", transcript)
+            .put("timezone", java.time.ZoneId.systemDefault().id)
             .put("contacts", JSONArray().apply {
                 contacts.take(15).forEach { contact ->
                     put(JSONObject()
