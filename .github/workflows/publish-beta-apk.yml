@@ -1,0 +1,49 @@
+name: Publish downloadable Poyara beta APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-beta-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Build tested APK
+        run: gradle --no-daemon :app:assembleDebug
+      - name: Prepare directly installable APK
+        run: |
+          set -euo pipefail
+          test -s app/build/outputs/apk/debug/app-debug.apk
+          cp app/build/outputs/apk/debug/app-debug.apk POYARA-CRM-0.19.2.apk
+          sha256sum POYARA-CRM-0.19.2.apk
+      - name: Publish public GitHub Release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag='v0.19.2'
+          apk='POYARA-CRM-0.19.2.apk'
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$apk" --clobber
+          else
+            gh release create "$tag" "$apk" --target "$GITHUB_SHA" \
+              --title "POYARA CRM 0.19.2 (Android beta)" \
+              --notes "Direct Android APK for version 0.19.2. This is a debug-signed testing build. Back up your existing CRM data before installation. Do not uninstall your current app unless you have a verified backup. Installation over earlier builds may fail because their debug signing keys differ." \
+              --prerelease
+          fi
