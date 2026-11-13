@@ -155,7 +155,7 @@ async def analyze_text(
             contact["phone"] = normalize_numbers(contact["phone"]).strip()
     for reminder in proposals["reminders"]:
         reminder["remind_days_before"] = max(0, min(7, reminder["remind_days_before"]))
-        if reminder["date_iso"] and not re.fullmatch(r"\\d{4}-\\d{2}-\\d{2}", reminder["date_iso"]):
+        if reminder["date_iso"] and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", reminder["date_iso"]):
             reminder["date_iso"] = None
             reminder["requires_confirmation"] = True
     return {"status": "needs_review", "contacts": proposals["contacts"][:10],
