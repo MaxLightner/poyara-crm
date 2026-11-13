@@ -32,40 +32,53 @@ class CrmCallScreeningService : CallScreeningService() {
             val match = db.findByPhone(number) ?: return
             val direction = if (incoming) "ورودی" else "خروجی"
             db.addCallEvent(match.id, direction, number)
-            showInfo(match, direction)
+            showInfo(match, direction, number)
         } finally {
             db.close()
         }
     }
 
-    private fun showInfo(entry: ContactEntry, direction: String) {
+    private fun showInfo(entry: ContactEntry, direction: String, number: String) {
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) return
 
         val manager = getSystemService(NotificationManager::class.java)
-        val channelId = "poyara_caller_context"
+        val channelId = "poyara_caller_context_v2"
         manager.createNotificationChannel(
             NotificationChannel(channelId, "اطلاعات تماس کاری", NotificationManager.IMPORTANCE_HIGH)
         )
-        val open = Intent(this, MainActivity::class.java).apply {
+        val open = Intent(this, CrmCallerInfoActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra("record_id", entry.id)
+            putExtra("caller_number", number)
+            putExtra("direction", direction)
         }
         val pending = PendingIntent.getActivity(
             this, entry.id.toInt(), open,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val title = entry.name.ifBlank { entry.company.ifBlank { entry.phone } }
-        val summary = entry.note.ifBlank { "پرونده کاری در پویارا ثبت شده است." }
-        val info = "شماره: ${entry.phone}\n${summary.take(500)}"
+        val facts = listOfNotNull(
+            entry.role.takeIf { it.isNotBlank() }?.let { "سمت: " + it },
+            entry.company.takeIf { it.isNotBlank() }?.let { "مجموعه: " + it },
+            entry.category.takeIf { it.isNotBlank() }?.let { "حوزه: " + it }
+        )
+        val summary = facts.joinToString(" · ")
+            .ifBlank { "مشتری ثبت‌شده در پویارا" }
+        val info = listOf(
+            "شماره: " + number,
+            facts.joinToString("\n"),
+            entry.note.takeIf { it.isNotBlank() }?.let { "یادداشت: " + it.take(250) }.orEmpty()
+        ).filter { it.isNotBlank() }.joinToString("\n")
         val notification = NotificationCompat.Builder(this, channelId)
             .setSmallIcon(android.R.drawable.ic_menu_info_details)
-            .setContentTitle("تماس $direction · $title")
+            .setContentTitle("تماس کاری $direction · $title")
             .setContentText(summary.take(110))
             .setStyle(NotificationCompat.BigTextStyle().bigText(info))
             .setContentIntent(pending)
             .setAutoCancel(true)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .build()

@@ -1,6 +1,6 @@
 # POYARA Voice MVP server
 
-This is an **opt-in, single-user pilot**, not the future team backend. It transcribes audio and produces JSON proposals. It never modifies CRM records or sends messages.
+The default extraction model is **gpt-6-luna** via Responses API. The recorded-audio path uses **gpt-transcribe**; both APIs are paid. The Android Google live dictation path can skip paid audio transcription.\n\nThis is an **opt-in, single-user pilot**, not the future team backend. It transcribes audio and produces JSON proposals. It never modifies CRM records or sends messages.
 
 ## Start (behind HTTPS)
 

@@ -211,7 +211,6 @@ private fun CrmHome(initialRecordId: Long) {
     val backup = remember { CrmBackup(context.applicationContext, db) }
     var smsBody by rememberSaveable { mutableStateOf(startupEntry?.let { db.smsDraft(it.id) } ?: "") }
     var callerEnabled by remember { mutableStateOf(false) }
-    var dialerEnabled by remember { mutableStateOf(false) }
     val roleManager = remember {
         if (Build.VERSION.SDK_INT >= 29) context.getSystemService(RoleManager::class.java) else null
     }
@@ -222,9 +221,6 @@ private fun CrmHome(initialRecordId: Long) {
         // Voice files and all CRM records are retained.
         androidx.work.WorkManager.getInstance(context)
             .cancelAllWorkByTag("poyara_voice_upload")
-        dialerEnabled = if (Build.VERSION.SDK_INT >= 29) {
-            roleManager?.isRoleHeld(RoleManager.ROLE_DIALER) == true
-        } else false
         callerEnabled = if (Build.VERSION.SDK_INT >= 29) {
             roleManager?.isRoleHeld(RoleManager.ROLE_CALL_SCREENING) == true
         } else false
@@ -983,21 +979,6 @@ private fun CrmHome(initialRecordId: Long) {
         }
     }
 
-    val dialerLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) {
-        dialerEnabled = Build.VERSION.SDK_INT >= 29 &&
-            roleManager?.isRoleHeld(RoleManager.ROLE_DIALER) == true
-    }
-
-    fun requestDialerRole() {
-        if (Build.VERSION.SDK_INT >= 29 &&
-            roleManager?.isRoleAvailable(RoleManager.ROLE_DIALER) == true) {
-            dialerLauncher.launch(roleManager.createRequestRoleIntent(RoleManager.ROLE_DIALER))
-        } else Toast.makeText(context, "انتخاب برنامه تلفن در این گوشی پشتیبانی نشد",
-            Toast.LENGTH_LONG).show()
-    }
-
     val roleLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) {
@@ -1016,11 +997,22 @@ private fun CrmHome(initialRecordId: Long) {
         }
     }
 
-    val notificationPermission = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { allowed ->
-        if (allowed) requestCallerRole()
-        else Toast.makeText(context, "نمایش جزئیات تماس به اجازه اعلان نیاز دارد", Toast.LENGTH_LONG).show()
+    val callerPermissions = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { result ->
+        val notificationsAllowed = Build.VERSION.SDK_INT < 33 ||
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+                PackageManager.PERMISSION_GRANTED
+        val contactsAllowed =
+            context.checkSelfPermission(Manifest.permission.READ_CONTACTS) ==
+                PackageManager.PERMISSION_GRANTED
+        if (notificationsAllowed && contactsAllowed) {
+            requestCallerRole()
+        } else {
+            Toast.makeText(context,
+                "برای نمایش تماس مشتریانی که در دفترچه گوشی هم هستند، اجازه مخاطبین و اعلان لازم است.",
+                Toast.LENGTH_LONG).show()
+        }
     }
 
     val reminderNotificationPermission = rememberLauncherForActivityResult(
@@ -1042,10 +1034,15 @@ private fun CrmHome(initialRecordId: Long) {
     }
 
     fun activateCallerContext() {
-        if (Build.VERSION.SDK_INT >= 33 &&
-            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-        else requestCallerRole()
+        val permissions = buildList {
+            if (context.checkSelfPermission(Manifest.permission.READ_CONTACTS) !=
+                PackageManager.PERMISSION_GRANTED) add(Manifest.permission.READ_CONTACTS)
+            if (Build.VERSION.SDK_INT >= 33 &&
+                context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
+                    PackageManager.PERMISSION_GRANTED) add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        if (permissions.isEmpty()) requestCallerRole()
+        else callerPermissions.launch(permissions.toTypedArray())
     }
 
     val mapLauncher = rememberLauncherForActivityResult(
@@ -1547,8 +1544,8 @@ private fun CrmHome(initialRecordId: Long) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text("شناسایی تماس‌های کاری", fontWeight = FontWeight.Bold)
                         Text(
-                            if (callerEnabled) "فعال است؛ در تماس‌های شناخته‌شده یادداشت به صورت اعلان نمایش داده می‌شود."
-                            else "برای دیدن خلاصه پرونده هنگام تماس ورودی و خروجی، این گزینه را فعال کن.",
+                            if (callerEnabled) "فعال است؛ فقط تماس شماره‌های ثبت‌شده در CRM اعلان شناسایی دریافت می‌کنند و با لمس آن کارت تماس پویارا باز می‌شود."
+                            else "برای نمایش نام، عکس، سمت و مجموعه مشتریان ثبت‌شده روی تماس عادی گوشی، شناسایی تماس کاری را فعال کن.",
                             style = MaterialTheme.typography.bodySmall
                         )
                         if (!callerEnabled) {
@@ -1557,15 +1554,10 @@ private fun CrmHome(initialRecordId: Long) {
                             }
                         }
                         HorizontalDivider()
-                        Text("صفحه تماس اختصاصی پویارا", fontWeight = FontWeight.Bold)
-                        Text(if (dialerEnabled) "پویارا برنامه تلفن پیش‌فرض این گوشی است."
-                            else "برای جایگزینی صفحه تماس گوشی، باید پویارا را برنامه تلفن پیش‌فرض انتخاب کنی. این انتخاب بر تمام تماس‌ها اثر می‌گذارد؛ ابتدا روی گوشی آزمایش کن.",
+                        Text("شماره‌گیر اصلی گوشی تغییر نمی‌کند؛ تماس‌های خارج از پویارا هیچ اعلانی از CRM دریافت نمی‌کنند.",
                             style = MaterialTheme.typography.bodySmall)
-                        if (!dialerEnabled) {
-                            OutlinedButton(onClick = { requestDialerRole() }) {
-                                Text("انتخاب به‌عنوان برنامه تماس پیش‌فرض")
-                            }
-                        }
+                        Text("کارت تماس کاری جایگزین دکمه پاسخ و رد تماس اندروید نیست؛ این کنترل‌ها در صفحه تماس معمولی گوشی باقی می‌مانند.",
+                            style = MaterialTheme.typography.bodySmall)
                     }
                 }
 
