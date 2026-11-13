@@ -661,7 +661,8 @@ private fun CrmHome(initialRecordId: Long) {
                 companyName.isNotBlank() || phone.isNotBlank() || note.isNotBlank() ||
                 draftAttachments.isNotEmpty() || draftLatitude != null || recordId > 0L
             if (page == "capture" && hasAnyInformation) {
-                val canComplete = note.isNotBlank() || (personName.isNotBlank() && phone.isNotBlank())
+                val canComplete = !isRecording && pendingAutoTranscriptions.isEmpty() &&
+                    (note.isNotBlank() || (personName.isNotBlank() && phone.isNotBlank()))
                 FloatingActionButton(
                     modifier = Modifier.size(64.dp),
                     containerColor = if (canComplete) Color(0xFF087866) else Color(0xFFD9E5E3),
@@ -670,7 +671,9 @@ private fun CrmHome(initialRecordId: Long) {
                     onClick = {
                         if (!canComplete) {
                             Toast.makeText(
-                                context, "برای ثبت، چیزی در کادر اصلی بنویس یا ویس را تبدیل کن",
+                                context, if (isRecording || pendingAutoTranscriptions.isNotEmpty())
+                                    "ضبط یا تبدیل صوت هنوز کامل نشده است"
+                                else "برای ثبت، چیزی در کادر اصلی بنویس یا ویس را تبدیل کن",
                                 Toast.LENGTH_SHORT
                             ).show()
                         } else if (save() > 0L) {
@@ -1136,13 +1139,19 @@ private fun CrmHome(initialRecordId: Long) {
                                     entry.name,
                                     fontWeight = FontWeight.Bold,
                                     style = MaterialTheme.typography.titleMedium
-                                )
+                                ) else if (entry.company.isBlank() && entry.note.isNotBlank()) {
+                                    Text(
+                                        entry.note.lineSequence().firstOrNull().orEmpty().take(64),
+                                        fontWeight = FontWeight.Bold,
+                                        style = MaterialTheme.typography.titleMedium
+                                    )
+                                }
                                 if (entry.company.isNotBlank()) Text(
                                     entry.company,
                                     color = MaterialTheme.colorScheme.primary,
                                     style = MaterialTheme.typography.labelMedium
                                 )
-                                Text(entry.phone.ifBlank { "بدون شماره" }, fontWeight = FontWeight.SemiBold)
+                                if (entry.phone.isNotBlank()) Text(entry.phone, fontWeight = FontWeight.SemiBold)
                                 if (entry.note.isNotBlank()) Text(
                                     entry.note,
                                     maxLines = 3,
