@@ -5,6 +5,7 @@ records, or sends messages. The caller validates and applies commands separately
 """
 import json
 import re
+import base64
 
 import httpx
 from fastapi import HTTPException
@@ -78,4 +79,49 @@ async def extract_gemini_proposal(
         raise HTTPException(503, "Gemini is temporarily unreachable") from exc
     except (ValueError, TypeError) as exc:
         raise HTTPException(502, "Gemini returned an invalid network response") from exc
+    return parse_gemini_response(data)
+
+
+async def extract_gemini_audio_proposal(
+    api_key: str, model: str, instructions: str, payload: str,
+    schema: dict, audio: bytes
+) -> dict:
+    """Use the original recorded audio to resolve names and spoken corrections.
+
+    This is opt-in. The raw audio is sent to Gemini, and is not stored by this API.
+    A Google free-tier account may have an audio quota and privacy conditions.
+    """
+    if not api_key.strip():
+        raise HTTPException(503, "Gemini API key is not configured")
+    if not re.fullmatch(r"gemini-[a-z0-9.\\-]{3,64}", model):
+        raise HTTPException(503, "Invalid Gemini model name")
+    if not 256 <= len(audio) <= (10 * 1024 * 1024):
+        raise HTTPException(413, "Audio length must be between 256 bytes and 10 MB")
+    req = build_gemini_request(instructions, payload, schema)
+    req["contents"][0]["parts"].append({
+        "inlineData": {
+            "mimeType": "audio/m4a",
+            "data": base64.b64encode(audio).decode("ascii"),
+        }
+    })
+    url = f"{GEMINI_API_BASE}/models/{model}:generateContent"
+    try:
+        async with httpx.AsyncClient(timeout=100.0) as client:
+            resp = await client.post(
+                url, headers={
+                    "x-goog-api-key": api_key,
+                    "Content-Type": "application/json",
+                }, json=req,
+            )
+            if resp.status_code == 429:
+                raise HTTPException(429, "Gemini free audio quota exhausted; recording kept locally")
+            if resp.status_code in (401, 403):
+                raise HTTPException(503, "Gemini API account not authorized for audio")
+            if resp.status_code != 200:
+                raise HTTPException(502, "Gemini audio request failed")
+            data = resp.json()
+    except httpx.RequestError as exc:
+        raise HTTPException(503, "Gemini audio is unavailable") from exc
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(502, "Gemini audio returned invalid response") from exc
     return parse_gemini_response(data)
