@@ -17,6 +17,7 @@ import httpx
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from fastapi.responses import JSONResponse
+from gemini_agent import extract_gemini_proposal, DEFAULT_GEMINI_MODEL
 
 MAX_AUDIO_BYTES = 25 * 1024 * 1024
 OPENAI_ENDPOINT = "https://api.openai.com/v1"
@@ -96,9 +97,9 @@ async def analyze_text(
 ):
     """Small, single-turn text extraction. No persistent agent or audio upload."""
     require_pilot_auth(authorization)
-    api_key = os.getenv("OPENAI_API_KEY", "")
-    if not api_key:
-        raise HTTPException(503, "Text agent model key is not configured")
+    provider = os.getenv("POYARA_TEXT_PROVIDER", "gemini").strip().lower()
+    if provider not in ("gemini", "openai"):
+        raise HTTPException(503, "Unsupported text provider configured")
     transcript = request.transcript.strip()
     if not transcript:
         raise HTTPException(422, "Empty transcript")
@@ -126,42 +127,69 @@ async def analyze_text(
         "transcript": transcript,
         "known_contacts": trim_context(json.dumps(request.contacts, ensure_ascii=False)),
     }, ensure_ascii=False)
-    async with httpx.AsyncClient(timeout=75.0) as client:
+    if provider == "gemini":
+        proposals = await extract_gemini_proposal(
+            api_key=os.getenv("GEMINI_API_KEY", ""),
+            model=os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL),
+            instructions=instructions,
+            payload=payload,
+            schema=PROPOSAL_SCHEMA,
+        )
+    else:
+        # Legacy paid provider is NEVER selected unless explicitly configured.
+        api_key = os.getenv("OPENAI_API_KEY", "")
+        if not api_key:
+            raise HTTPException(503, "OpenAI text model key is not configured")
+        async with httpx.AsyncClient(timeout=75.0) as client:
+            try:
+                response = await client.post(
+                    f"{OPENAI_ENDPOINT}/responses",
+                    headers={"Authorization": f"Bearer {api_key}",
+                             "Content-Type": "application/json"},
+                    json={
+                        "model": os.getenv("POYARA_EXTRACTION_MODEL", "gpt-6-luna"),
+                        "instructions": instructions,
+                        "input": payload,
+                        "store": False,
+                        "text": {"format": {
+                            "type": "json_schema", "name": "crm_text_proposal",
+                            "strict": True, "schema": PROPOSAL_SCHEMA
+                        }}
+                    }
+                )
+                response.raise_for_status()
+                result = response.json()
+                output = "".join(
+                    part.get("text", "")
+                    for item in result.get("output", [])
+                    if item.get("type") == "message"
+                    for part in item.get("content", [])
+                    if part.get("type") == "output_text"
+                )
+                proposals = json.loads(output)
+            except (httpx.HTTPError, ValueError, KeyError) as exc:
+                raise HTTPException(502, "Text agent extraction unavailable") from exc
+    for contact in proposals["contacts"][:10]:
+        if not isinstance(contact, dict):
+            raise HTTPException(502, "Invalid contact data from text provider")
+        if contact.get("phone"):
+            contact["phone"] = normalize_numbers(str(contact["phone"])).strip()
+    for reminder in proposals["reminders"][:10]:
+        if not isinstance(reminder, dict):
+            raise HTTPException(502, "Invalid reminder data from text provider")
         try:
-            response = await client.post(
-                f"{OPENAI_ENDPOINT}/responses",
-                headers={"Authorization": f"Bearer {api_key}",
-                         "Content-Type": "application/json"},
-                json={
-                    "model": os.getenv("POYARA_EXTRACTION_MODEL", "gpt-6-luna"),
-                    "instructions": instructions,
-                    "input": payload,
-                    "store": False,
-                    "text": {"format": {
-                        "type": "json_schema", "name": "crm_text_proposal",
-                        "strict": True, "schema": PROPOSAL_SCHEMA
-                    }}
-                }
+            reminder["remind_days_before"] = max(
+                0, min(7, int(reminder.get("remind_days_before", 0)))
             )
-            response.raise_for_status()
-            result = response.json()
-            output = "".join(
-                part.get("text", "")
-                for item in result.get("output", [])
-                if item.get("type") == "message"
-                for part in item.get("content", [])
-                if part.get("type") == "output_text"
-            )
-            proposals = json.loads(output)
-        except (httpx.HTTPError, ValueError, KeyError) as exc:
-            raise HTTPException(502, "Text agent extraction unavailable") from exc
-    for contact in proposals["contacts"]:
-        if contact["phone"]:
-            contact["phone"] = normalize_numbers(contact["phone"]).strip()
-    for reminder in proposals["reminders"]:
-        reminder["remind_days_before"] = max(0, min(7, reminder["remind_days_before"]))
-        if reminder["date_iso"] and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", reminder["date_iso"]):
+        except (TypeError, ValueError):
+            reminder["remind_days_before"] = 0
+        date = reminder.get("date_iso")
+        time = reminder.get("time_local")
+        if not (isinstance(date, str) and isinstance(time, str)
+                and re.fullmatch(r"\d{4}-\d{2}-\d{2}", date)
+                and re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", time)):
             reminder["date_iso"] = None
+            reminder["time_local"] = None
             reminder["requires_confirmation"] = True
     return {"status": "needs_review", "contacts": proposals["contacts"][:10],
             "reminders": proposals["reminders"][:10],
