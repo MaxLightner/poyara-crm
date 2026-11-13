@@ -46,17 +46,18 @@ PROPOSAL_SCHEMA = {
         "actions": {"type": "array", "items": {
             "type": "object", "properties": {
                 "type": {"type": "string", "enum": [
-                    "correct_name", "add_phone", "set_role", "set_category",
+                    "correct_name", "correct_phone", "remove_phone", "add_phone", "set_company", "set_role", "set_category",
                     "create_reminder", "update_reminder", "delete_reminder", "append_note"]},
                 "value": {"type": ["string", "null"]},
                 "target_reminder_id": {"type": ["integer", "null"]},
                 "title": {"type": ["string", "null"]},
                 "date_iso": {"type": ["string", "null"]},
                 "time_local": {"type": ["string", "null"]},
-                "requires_confirmation": {"type": "boolean"}
+                "requires_confirmation": {"type": "boolean"},
+                "remind_days_before": {"type": "integer"}
             },
             "required": ["type", "value", "target_reminder_id", "title",
-                "date_iso", "time_local", "requires_confirmation"],
+                "date_iso", "time_local", "requires_confirmation", "remind_days_before"],
             "additionalProperties": False
         }},
         "contacts": {"type": "array", "items": {
@@ -137,7 +138,8 @@ async def analyze_text(
         "clean readable version of the supplied text; preserve actual facts. "
         "If the speaker corrects their own surname or number, use the final explicit "
         "correction and add action correct_name or add_phone only as appropriate. "
-        "Use the actions array for commands: add_phone, set_role, set_category, "
+        "Use the actions array for commands: add_phone, correct_phone, remove_phone, "
+        "set_company, set_role, set_category, "
         "create_reminder, update_reminder, delete_reminder, append_note, correct_name. "
         "Never invent an ID; target_reminder_id must come from known_reminders "
         "provided in context. If the user only says 'ساعت سه', interpret a likely "
