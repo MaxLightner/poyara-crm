@@ -951,7 +951,8 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
     }
 
     fun beginGoogleDictation() {
-        if (isRecording || googleVoiceBusy) return
+        if (isRecording || googleVoiceBusy || agentBusy) return
+        pendingVoiceFilePath = ""
         recordingError = ""
         googleVoiceBusy = true
         googleVoiceStage = "در حال فعال‌کردن سرویس گفتار گوگل..."
@@ -1448,7 +1449,10 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                             contentColor = Color.White,
                             shape = RoundedCornerShape(30.dp),
                             onClick = {
-                                if (isRecording) {
+                                if (agentBusy) {
+                                    Toast.makeText(context, "پردازش ویس قبلی هنوز ادامه دارد",
+                                        Toast.LENGTH_SHORT).show()
+                                } else if (isRecording) {
                                     if (googleVoiceMode) stopGoogleDictation() else stopRecording()
                                 } else if (!voiceTranscribing && !googleVoiceBusy &&
                                     context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
@@ -1865,28 +1869,17 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                         label = { Text("اطلاعات این مشتری ناقص است؛ تکمیل سمت و گروه") }
                     )
                 }
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                    Button(
-                        onClick = {
-                            val transcript = pendingVoiceTranscript.ifBlank { note.trim() }
-                            if (transcript.isNotBlank() || pendingVoiceFilePath.isNotBlank()) {
-                                if (pendingVoiceFilePath.isNotBlank() &&
-                                    transcript.isBlank() &&
-                                    !directGeminiSettings.configured &&
-                                    !textAgentSettings.configured) {
-                                    agentMessages = listOf(
-                                        "صدا ذخیره شده است، اما برای پردازش فایل بدون متن " +
-                                        "باید Gemini را در تنظیمات فعال کنی."
-                                    )
-                                } else addSpeechToCapture(transcript)
-                            }
-                        },
-                        enabled = !agentBusy && !isRecording && !voiceTranscribing &&
-                            (note.isNotBlank() || pendingVoiceFilePath.isNotBlank()),
-                        modifier = Modifier.weight(1f)
-                    ) { Text(if (agentBusy) "در حال پردازش..." else "✦ پردازش با هوش مصنوعی") }
-                    OutlinedButton(onClick = { takePhoto() }) { Text("▣") }
+                if (agentBusy) {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                    Text("در حال تحلیل خودکار گفتار...",
+                        style = MaterialTheme.typography.bodySmall)
+                }
+                if (!agentBusy && cloudflareSettings.configured &&
+                    pendingVoiceTranscript.isNotBlank() &&
+                    agentMessages.any { "در دسترس نبود" in it || "خطا" in it }) {
+                    TextButton(onClick = {
+                        addSpeechToCapture(pendingVoiceTranscript)
+                    }) { Text("تلاش دوباره برای پردازش ویس") }
                 }
                 if (isRecording || voiceTranscribing || googleVoiceBusy) {
                     Text(if (isRecording) "● ضبط صدا فعال است؛ دایره قرمز را برای پایان بزن"
@@ -1897,9 +1890,8 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                     Text(recordingError, color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall)
                 }
-                if (!directGeminiSettings.configured && !textAgentSettings.configured &&
-                    agentMessages.isNotEmpty()) {
-                    Text("کلید رایگان Gemini هنوز در تنظیمات وارد نشده است؛ پردازش محلی فعال است.",
+                if (!cloudflareSettings.configured && agentMessages.isNotEmpty()) {
+                    Text("برای تحلیل ابری یک‌بار Workers AI را در تنظیمات وصل کن؛ پردازش محلی فعال است.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.secondary)
                 }
