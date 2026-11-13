@@ -13,6 +13,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
@@ -192,19 +193,37 @@ fun WeeklyAgenda(
         val end = (start.clone() as Calendar).apply { add(Calendar.DAY_OF_MONTH, 7) }
         start.timeInMillis to end.timeInMillis
     }
-    val reminders = remember(refreshKey, week) {
-        db.remindersBetween(week.first, week.second)
+    var showOnlyWeek by remember { mutableStateOf(false) }
+    val reminders = remember(refreshKey, week, showOnlyWeek) {
+        val all = db.allReminders(includeDone = true)
+        if (showOnlyWeek)
+            all.filter { it.dueAt >= week.first && it.dueAt < week.second }
+        else
+            all.filter { it.dueAt >= System.currentTimeMillis() - 12 * 60 * 60 * 1000L }
     }
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text("برنامه کاری هفته", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("برنامه کاری", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(
+                selected = !showOnlyWeek, onClick = { showOnlyWeek = false },
+                label = { Text("همه قرارهای پیش‌رو") }
+            )
+            FilterChip(
+                selected = showOnlyWeek, onClick = { showOnlyWeek = true },
+                label = { Text("فقط این هفته") }
+            )
+        }
         Text(
-            "جلسه‌ها، تماس‌ها و پیگیری‌های ثبت‌شده",
+            if (showOnlyWeek) "قرارهای هفته جاری، از شنبه تا جمعه"
+            else "قرارهای آینده حتی اگر هفته بعد یا ماه آینده باشند",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.secondary
         )
         if (reminders.isEmpty()) {
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-                Text("برای این هفته برنامه‌ای ثبت نشده است.", Modifier.padding(18.dp))
+                Text(if (showOnlyWeek) "برای این هفته برنامه‌ای ثبت نشده است؛ بخش «همه قرارهای پیش‌رو» را ببین."
+                    else "قرار آینده‌ای ثبت نشده است؛ پس از ثبت قرار، همین‌جا نمایش داده می‌شود.",
+                    Modifier.padding(18.dp))
             }
         } else {
             reminders.groupBy {
