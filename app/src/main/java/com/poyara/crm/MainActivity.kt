@@ -124,6 +124,13 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
     val cloudflareSettings = remember { CloudflareLocalSettings(context.applicationContext) }
     var cloudflareAccountId by remember { mutableStateOf(cloudflareSettings.accountId) }
     var cloudflareApiToken by remember { mutableStateOf("") }
+    val cloudflareStatusPrefs = remember {
+        context.getSharedPreferences("poyara_cloudflare_status", Context.MODE_PRIVATE)
+    }
+    var cloudflareVerified by remember {
+        mutableStateOf(cloudflareStatusPrefs.getBoolean("verified", false))
+    }
+    var cloudflareChecking by remember { mutableStateOf(false) }
     var directGeminiKey by remember { mutableStateOf("") }
     val agentPrefs = remember { context.getSharedPreferences("poyara_text_agent", Context.MODE_PRIVATE) }
     var agentPrivacyConsent by remember {
@@ -1590,9 +1597,47 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                                 style = MaterialTheme.typography.bodySmall)
                         }
                         if (cloudflareSettings.configured) {
-                            Text("✓ حساب Workers AI روی این دستگاه تنظیم شده است",
+                            Text(
+                                if (cloudflareVerified) "✓ اتصال Workers AI قبلاً بررسی شده است"
+                                else "حساب ذخیره شده؛ اتصال هنوز تأیید نشده است",
                                 color = MaterialTheme.colorScheme.primary,
-                                style = MaterialTheme.typography.bodySmall)
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            OutlinedButton(
+                                enabled = !cloudflareChecking,
+                                onClick = {
+                                    cloudflareChecking = true
+                                    coroutineScope.launch {
+                                        val check = withContext(Dispatchers.IO) {
+                                            runCatching {
+                                                CloudflareDirectClient(context.applicationContext)
+                                                    .testConnection()
+                                            }
+                                        }
+                                        cloudflareChecking = false
+                                        check.onSuccess {
+                                            cloudflareVerified = true
+                                            cloudflareStatusPrefs.edit()
+                                                .putBoolean("verified", true).apply()
+                                            agentOptIn = agentPrivacyConsent
+                                            agentPrefs.edit().putBoolean("enabled", agentOptIn).apply()
+                                            Toast.makeText(context,
+                                                "اتصال هوش مصنوعی برقرار است",
+                                                Toast.LENGTH_LONG).show()
+                                        }.onFailure { error ->
+                                            cloudflareVerified = false
+                                            cloudflareStatusPrefs.edit()
+                                                .putBoolean("verified", false).apply()
+                                            agentOptIn = false
+                                            agentPrefs.edit().putBoolean("enabled", false).apply()
+                                            Toast.makeText(context,
+                                                "اتصال برقرار نشد: " +
+                                                    error.localizedMessage.orEmpty().take(150),
+                                                Toast.LENGTH_LONG).show()
+                                        }
+                                    }
+                                }
+                            ) { Text(if (cloudflareChecking) "در حال بررسی..." else "آزمایش اتصال") }
                         } else {
                             OutlinedTextField(value = cloudflareAccountId,
                                 onValueChange = { cloudflareAccountId = it.trim() },
@@ -1614,10 +1659,12 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                                     }
                                     cloudflareSettings.save(cloudflareAccountId, cloudflareApiToken)
                                     cloudflareApiToken = ""
-                                    agentOptIn = true
-                                    agentPrefs.edit().putBoolean("enabled", true).apply()
+                                    cloudflareVerified = false
+                                    cloudflareStatusPrefs.edit().putBoolean("verified", false).apply()
+                                    agentOptIn = false
+                                    agentPrefs.edit().putBoolean("enabled", false).apply()
                                 }.onSuccess {
-                                    Toast.makeText(context, "Workers AI برای پردازش خودکار فعال شد",
+                                    Toast.makeText(context, "حساب ذخیره شد؛ حالا «آزمایش اتصال» را بزن",
                                         Toast.LENGTH_LONG).show()
                                 }.onFailure {
                                     Toast.makeText(context, it.localizedMessage.orEmpty(),
@@ -1630,8 +1677,8 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                         }
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text("پردازش خودکار", modifier = Modifier.weight(1f))
-                            Switch(checked = agentOptIn && cloudflareSettings.configured,
-                                enabled = cloudflareSettings.configured && agentPrivacyConsent,
+                            Switch(checked = agentOptIn && cloudflareSettings.configured && cloudflareVerified,
+                                enabled = cloudflareSettings.configured && cloudflareVerified && agentPrivacyConsent,
                                 onCheckedChange = { enabled ->
                                     agentOptIn = enabled && agentPrivacyConsent
                                     agentPrefs.edit().putBoolean("enabled", agentOptIn).apply()
@@ -1640,6 +1687,8 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                         if (cloudflareSettings.configured) {
                             TextButton(onClick = {
                                 cloudflareSettings.clear()
+                                cloudflareVerified = false
+                                cloudflareStatusPrefs.edit().putBoolean("verified", false).apply()
                                 agentOptIn = false
                                 agentPrefs.edit().putBoolean("enabled", false).apply()
                             }) { Text("حذف اتصال Cloudflare") }
