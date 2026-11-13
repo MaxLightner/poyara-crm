@@ -117,7 +117,15 @@ private fun CrmHome(initialRecordId: Long) {
     var googleSyncBusy by remember { mutableStateOf(false) }
     val textAgentSettings = remember { VoiceServerSettings(context.applicationContext) }
     val agentPrefs = remember { context.getSharedPreferences("poyara_text_agent", Context.MODE_PRIVATE) }
-    var agentOptIn by remember { mutableStateOf(agentPrefs.getBoolean("enabled", false)) }
+    var agentPrivacyConsent by remember {
+        mutableStateOf(agentPrefs.getBoolean("cloud_text_consent_v1", false))
+    }
+    // Every installation, including upgrades from a paid-agent build, must
+    // explicitly consent before transcript text leaves the device.
+    var agentOptIn by remember {
+        mutableStateOf(agentPrefs.getBoolean("enabled", false) &&
+            agentPrefs.getBoolean("cloud_text_consent_v1", false))
+    }
     var agentUrl by rememberSaveable { mutableStateOf(textAgentSettings.endpoint) }
     var agentPairingToken by remember { mutableStateOf("") }
     var agentBusy by remember { mutableStateOf(false) }
@@ -482,7 +490,7 @@ private fun CrmHome(initialRecordId: Long) {
         lastVoiceActions = (feedback + warnings).distinct().ifEmpty {
             listOf("متن گفتار ذخیره شد؛ دستور روشن دیگری برای اعمال پیدا نشد.")
         }
-        if (agentOptIn && textAgentSettings.configured && !agentBusy) {
+        if (agentOptIn && agentPrivacyConsent && textAgentSettings.configured && !agentBusy) {
             val sourceEntryId = entryId
             val sourceName = personName
             val sourcePhone = phone
@@ -490,7 +498,7 @@ private fun CrmHome(initialRecordId: Long) {
             coroutineScope.launch {
                 val result = withContext(Dispatchers.IO) {
                     runCatching { CrmTextAgentClient(context.applicationContext)
-                        .analyze(transcript, db.all()) }
+                        .analyze(transcript, db.all().filter { it.id == sourceEntryId }) }
                 }
                 agentBusy = false
                 result.onSuccess { json ->
@@ -1292,9 +1300,25 @@ private fun CrmHome(initialRecordId: Long) {
                 Card(colors = CardDefaults.cardColors(containerColor = Color.White)) {
                     Column(Modifier.fillMaxWidth().padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Agent سبک پردازش متن", fontWeight = FontWeight.SemiBold)
-                        Text("پس از تبدیل گفتار گوگل، فقط متن و حداکثر ۱۵ مخاطب مرتبط برای تحلیل فرستاده می‌شود. پردازش محلی حتی بدون Agent ادامه دارد؛ سرور و کلید مدل باید جداگانه تنظیم شوند.",
+                        Text("Agent رایگان · Gemini Flash-Lite", fontWeight = FontWeight.SemiBold)
+                        Text("مدل رایگان گوگل از طریق سرور خصوصی شما فراخوانی می‌شود. فقط متن همان ویس و نام/مجموعه همین پرونده ارسال می‌شود؛ سایر مخاطبین گوشی فرستاده نمی‌شوند. بدون اتصال، موتور محلی همچنان کار می‌کند.",
                             style = MaterialTheme.typography.bodySmall)
+                        Text("توجه: در سهمیه رایگان Gemini، گوگل ممکن است متن ارسالی را برای بهبود محصولاتش استفاده کند؛ اطلاعات مشتری را فقط با رضایت و آگاهی ارسال کن. سهمیه رایگان محدود است؛ خود سرور ممکن است هزینه داشته باشد.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = agentPrivacyConsent,
+                                onCheckedChange = { accepted ->
+                                    agentPrivacyConsent = accepted
+                                    if (!accepted) agentOptIn = false
+                                    agentPrefs.edit()
+                                        .putBoolean("cloud_text_consent_v1", accepted)
+                                        .putBoolean("enabled", if (accepted) agentOptIn else false)
+                                        .apply()
+                                })
+                            Text("با ارسال متن گفتار مشتری برای تحلیل ابری موافقم",
+                                style = MaterialTheme.typography.bodySmall)
+                        }
                         OutlinedTextField(value = agentUrl, onValueChange = { agentUrl = it },
                             label = { Text("آدرس HTTPS سرور Agent") },
                             singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -1307,6 +1331,9 @@ private fun CrmHome(initialRecordId: Long) {
                             horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(onClick = {
                                 runCatching {
+                                    require(agentPrivacyConsent) {
+                                        "برای فعال‌سازی Agent، ابتدا اجازه ارسال متن به مدل ابری را تأیید کن."
+                                    }
                                     textAgentSettings.save(agentUrl, agentPairingToken)
                                     agentPairingToken = ""
                                     agentOptIn = true
@@ -1319,10 +1346,10 @@ private fun CrmHome(initialRecordId: Long) {
                             }) { Text("ذخیره اتصال") }
                             Text("فعال", style = MaterialTheme.typography.bodySmall)
                             Switch(checked = agentOptIn,
-                                enabled = textAgentSettings.configured,
+                                enabled = textAgentSettings.configured && agentPrivacyConsent,
                                 onCheckedChange = { value ->
-                                    agentOptIn = value
-                                    agentPrefs.edit().putBoolean("enabled", value).apply()
+                                    agentOptIn = value && agentPrivacyConsent
+                                    agentPrefs.edit().putBoolean("enabled", agentOptIn).apply()
                                 })
                         }
                         if (agentBusy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
