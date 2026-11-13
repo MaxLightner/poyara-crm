@@ -11,6 +11,11 @@
       "name": "REQUEST_LIMITER",
       "namespace_id": "5071",
       "simple": { "limit": 30, "period": 60 }
+    },
+    {
+      "name": "GLOBAL_LIMITER",
+      "namespace_id": "5072",
+      "simple": { "limit": 60, "period": 60 }
     }
   ]
 }
