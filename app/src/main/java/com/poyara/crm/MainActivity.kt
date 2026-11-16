@@ -7,6 +7,7 @@ import android.app.TimePickerDialog
 import android.accounts.AccountManager
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.provider.ContactsContract
 import android.net.Uri
 import android.app.StatusBarManager
 import android.content.ComponentName
@@ -123,16 +124,31 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
     var centralCheckBusy by remember { mutableStateOf(false) }
     var centralAgentStatus by remember { mutableStateOf("") }
     val agentPrefs = remember { context.getSharedPreferences("poyara_text_agent", Context.MODE_PRIVATE) }
+    // This team explicitly enables central voice-agent processing by default.
+    // The Settings toggle remains available to opt out. Disclose cloud transfer
+    // in Settings; do not silently fall back to an unconfigured local parser.
     var agentPrivacyConsent by remember {
-        mutableStateOf(agentPrefs.getBoolean("cloud_text_consent_v1", false))
+        mutableStateOf(agentPrefs.getBoolean("cloud_text_consent_v1", true))
     }
-    // Every installation, including upgrades from a paid-agent build, must
-    // explicitly consent before transcript text leaves the device.
     var agentOptIn by remember {
-        mutableStateOf(agentPrefs.getBoolean("enabled", false) &&
-            agentPrefs.getBoolean("cloud_text_consent_v1", false))
+        mutableStateOf(centralAgent.configured &&
+            agentPrefs.getBoolean("enabled", true) &&
+            agentPrefs.getBoolean("cloud_text_consent_v1", true))
     }
     var agentBusy by remember { mutableStateOf(false) }
+    // One-time migration for existing users from the older manual agent flow.
+    // The Settings opt-out remains available after this upgrade.
+    LaunchedEffect(centralAgent.configured) {
+        if (centralAgent.configured && !agentPrefs.contains("central_auto_enabled_v22")) {
+            agentPrivacyConsent = true
+            agentOptIn = true
+            agentPrefs.edit()
+                .putBoolean("cloud_text_consent_v1", true)
+                .putBoolean("enabled", true)
+                .putBoolean("central_auto_enabled_v22", true)
+                .apply()
+        }
+    }
     var pendingVoiceTranscript by rememberSaveable { mutableStateOf("") }
     var pendingVoiceFilePath by rememberSaveable { mutableStateOf("") }
     var voiceTranscribing by remember { mutableStateOf(false) }
@@ -213,6 +229,11 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
     var fileRevision by remember { mutableIntStateOf(0) }
     var reminderRevision by remember { mutableIntStateOf(0) }
     var search by rememberSaveable { mutableStateOf("") }
+    var systemContacts by remember { mutableStateOf<List<PhoneContactCandidate>>(emptyList()) }
+    var importPickerVisible by remember { mutableStateOf(false) }
+    var importPickerLoading by remember { mutableStateOf(false) }
+    var importPickerSearch by remember { mutableStateOf("") }
+    var selectedSystemContacts by remember { mutableStateOf<Set<Long>>(emptySet()) }
     var filterTag by rememberSaveable { mutableStateOf("همه") }
     var filterRole by rememberSaveable { mutableStateOf("همه سمت‌ها") }
     var filterCategory by rememberSaveable { mutableStateOf("همه گروه‌ها") }
@@ -368,7 +389,7 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
     fun appendRawSpeech(transcript: String) {
         val value = transcript.trim()
         if (value.isBlank()) return
-        // User first reviews raw speech; no CRM commands run until Process is tapped.
+        // The raw transcript is retained. Voice processing happens automatically.
         val next = listOf(note.trim(), value).filter { it.isNotBlank() }
             .joinToString("\n\n")
         note = next
@@ -429,6 +450,20 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
         personName = updatedName
         companyName = updatedCompany
         phone = updatedPhone
+        // "Another phone number" always targets the currently open customer.
+        // Extracted digits can be recorded locally before cloud completion.
+        val moreNumber = Regex("""(?:شماره|تلفن|موبایل).{0,32}(?:دیگه|دیگر|دوم|اضافه)|(?:یه|یک) شماره (?:دیگه|دیگر)""")
+            .containsMatchIn(PersianVoiceInterpreter.normalize(transcript))
+        if (moreNumber && personName.isNotBlank() && phone.isNotBlank()) {
+            PersianVoiceInterpreter.mobileNumbers(transcript)
+                .filter { normalizePhone(it) != normalizePhone(phone) &&
+                    extraPhones.none { saved -> normalizePhone(saved) == normalizePhone(it) } }
+                .forEach { extra ->
+                    extraPhones = extraPhones + extra
+                    showExtraPhones = true
+                    feedback += "شماره اضافی: $extra"
+                }
+        }
 
         // Save the spoken note first so a valid reminder can be linked to this
         // exact profile. Note-only profiles are allowed, no name/phone required.
@@ -724,6 +759,7 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                                             else if (number != normalizePhone(phone) &&
                                                 extraPhones.none { normalizePhone(it) == number })
                                                 extraPhones = extraPhones + number
+                                            showExtraPhones = extraPhones.isNotEmpty()
                                             save()
                                             notes += "شماره در مخاطب ثبت شد: $number"
                                         } else notes += "شماره پیشنهادی نامعتبر است؛ ثبت نشد."
@@ -756,21 +792,39 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                                             val title = action.optString("title")
                                                 .takeIf { it.isNotBlank() && it != "null" }
                                                 ?: "جلسه با " + personName.ifBlank { companyName }
-                                            val duplicate = db.allReminders(includeDone = true).any {
-                                                it.entryId == recordId && it.dueAt == due &&
-                                                    it.title == title
-                                            }
-                                            if (!duplicate) {
-                                                val lead = action.optInt("remind_days_before", 0)
-                                                    .coerceIn(0, 7)
+                                            val existingAtTime = db.allReminders(includeDone = true)
+                                                .firstOrNull {
+                                                    it.entryId == recordId &&
+                                                        kotlin.math.abs(it.dueAt - due) < 60_000L &&
+                                                        (it.title.contains("جلسه") ==
+                                                            title.contains("جلسه"))
+                                                }
+                                            val lead = action.optInt("remind_days_before", 0)
+                                                .coerceIn(0, 7)
+                                            if (existingAtTime == null) {
                                                 val id = db.addReminder(recordId,
                                                     title.take(160), due, lead)
                                                 db.allReminders().firstOrNull { it.id == id }
                                                     ?.let { ReminderScheduler.schedule(context, it) }
                                                 needVoiceNotificationPermission = true
+                                                notes += "قرار در برنامه کاری ثبت شد: $title"
+                                            } else {
+                                                // The local recognizer may already have created
+                                                // the same appointment. Upgrade its subject
+                                                // rather than inserting a duplicate.
+                                                val updatedTitle = if (title.length > existingAtTime.title.length)
+                                                    title.take(160) else existingAtTime.title
+                                                if (!existingAtTime.done &&
+                                                    (updatedTitle != existingAtTime.title ||
+                                                        lead != existingAtTime.remindDaysBefore)) {
+                                                    db.updateReminder(existingAtTime.id, recordId,
+                                                        updatedTitle, due, lead)
+                                                    ReminderScheduler.cancel(context, existingAtTime.id)
+                                                    db.allReminders().firstOrNull { it.id == existingAtTime.id }
+                                                        ?.let { ReminderScheduler.schedule(context, it) }
+                                                }
+                                                notes += "قرار قبلی یافت و با توضیح جدید تکمیل شد."
                                             }
-                                            notes += if (duplicate) "این قرار قبلاً ثبت شده است."
-                                                else "قرار در برنامه کاری ثبت شد: $title"
                                         }
                                     }
                                     "update_reminder" -> {
@@ -825,12 +879,17 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                             questions.optString(i).takeIf { it.isNotBlank() }
                                 ?.let { notes += "سؤال Agent: " + it.take(240) }
                         }
-                        agentMessages = notes.distinct().ifEmpty { listOf("Agent دستور جدیدی تشخیص نداد.") }
+                        agentMessages = notes.distinct().ifEmpty {
+                            listOf("هوش مصنوعی دستور تازه‌ای تشخیص نداد؛ متن ویس حفظ شده است.")
+                        }
+                        lastVoiceActions = agentMessages
+                        if (extraPhones.isNotEmpty()) showExtraPhones = true
                         refresh()
                     }
                 }.onFailure { error ->
                     agentMessages = listOf("Agent در دسترس نبود؛ متن و تغییرات محلی حفظ شدند: " +
                         error.localizedMessage.orEmpty().take(160))
+                    lastVoiceActions = agentMessages
                 }
             }
         }
@@ -1260,6 +1319,55 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                     "همگام‌سازی انجام نشد: ${error.localizedMessage}", Toast.LENGTH_LONG).show()
             }
         }
+    }
+
+    val phoneReadPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            importPickerLoading = true
+            coroutineScope.launch {
+                val response = withContext(Dispatchers.IO) {
+                    runCatching { PhoneContactImporter.read(context.applicationContext) }
+                }
+                importPickerLoading = false
+                response.onSuccess { contacts ->
+                    systemContacts = contacts
+                    selectedSystemContacts = emptySet()
+                    importPickerSearch = ""
+                    importPickerVisible = true
+                }.onFailure { error ->
+                    Toast.makeText(context, "خواندن مخاطبین گوشی ممکن نشد: " +
+                        error.localizedMessage.orEmpty().take(120), Toast.LENGTH_LONG).show()
+                }
+            }
+        } else {
+            Toast.makeText(context, "برای انتخاب مخاطبین باید دسترسی خواندن مخاطبین را بدهی.",
+                Toast.LENGTH_LONG).show()
+        }
+    }
+
+    fun choosePhoneContacts() {
+        if (context.checkSelfPermission(Manifest.permission.READ_CONTACTS) ==
+            PackageManager.PERMISSION_GRANTED) {
+            importPickerLoading = true
+            coroutineScope.launch {
+                val result = withContext(Dispatchers.IO) {
+                    runCatching { PhoneContactImporter.read(context.applicationContext) }
+                }
+                importPickerLoading = false
+                result.onSuccess { contacts ->
+                    systemContacts = contacts
+                    selectedSystemContacts = emptySet()
+                    importPickerSearch = ""
+                    importPickerVisible = true
+                }.onFailure { error ->
+                    Toast.makeText(context, "بارگذاری مخاطبین ناموفق بود: " +
+                        error.localizedMessage.orEmpty().take(120),
+                        Toast.LENGTH_LONG).show()
+                }
+            }
+        } else phoneReadPermission.launch(Manifest.permission.READ_CONTACTS)
     }
 
     val googleContactsPermissions = rememberLauncherForActivityResult(
@@ -2103,6 +2211,21 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                 )
             }
         } else {
+            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                Row(Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween) {
+                    OutlinedIconButton(onClick = { choosePhoneContacts() },
+                        modifier = Modifier.size(40.dp),
+                        enabled = !importPickerLoading) {
+                        Text("+", style = MaterialTheme.typography.titleLarge)
+                    }
+                    Text("مخاطبین", style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold)
+                }
+            }
+            if (importPickerLoading)
+                LinearProgressIndicator(Modifier.fillMaxWidth())
             Button(
                 onClick = { openMap(0L) },
                 modifier = Modifier.fillMaxWidth()
@@ -2204,6 +2327,98 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                     }
                 }
             }
+        }
+        if (importPickerVisible) {
+            AlertDialog(
+                onDismissRequest = { importPickerVisible = false },
+                title = { Text("افزودن مخاطب از موبایل") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = importPickerSearch,
+                            onValueChange = { importPickerSearch = it },
+                            label = { Text("جست‌وجوی نام یا شماره") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text("مخاطبین انتخاب‌شده: " + selectedSystemContacts.size,
+                            style = MaterialTheme.typography.bodySmall)
+                        val matching = systemContacts.filter { item ->
+                            importPickerSearch.isBlank() ||
+                                item.displayName.contains(importPickerSearch, ignoreCase = true) ||
+                                item.phones.any { it.contains(
+                                    PersianVoiceInterpreter.normalize(importPickerSearch)) }
+                        }
+                        LazyColumn(
+                            modifier = Modifier.fillMaxWidth().heightIn(max = 420.dp),
+                            verticalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            items(matching, key = { it.systemId }) { contact ->
+                                Row(
+                                    Modifier.fillMaxWidth()
+                                        .clickable {
+                                            selectedSystemContacts =
+                                                if (contact.systemId in selectedSystemContacts)
+                                                    selectedSystemContacts - contact.systemId
+                                                else selectedSystemContacts + contact.systemId
+                                        }.padding(vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Checkbox(
+                                        checked = contact.systemId in selectedSystemContacts,
+                                        onCheckedChange = { checked ->
+                                            selectedSystemContacts =
+                                                if (checked) selectedSystemContacts + contact.systemId
+                                                else selectedSystemContacts - contact.systemId
+                                        }
+                                    )
+                                    Column(Modifier.weight(1f)) {
+                                        Text(contact.displayName,
+                                            style = MaterialTheme.typography.bodyMedium)
+                                        Text(contact.phones.joinToString("، "),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.secondary,
+                                            maxLines = 2)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        enabled = selectedSystemContacts.isNotEmpty() && !importPickerLoading,
+                        onClick = {
+                            val selection = systemContacts.filter {
+                                it.systemId in selectedSystemContacts
+                            }
+                            importPickerLoading = true
+                            coroutineScope.launch {
+                                val result = withContext(Dispatchers.IO) {
+                                    runCatching { PhoneContactImporter.import(context, selection) }
+                                }
+                                importPickerLoading = false
+                                result.onSuccess { count ->
+                                    importPickerVisible = false
+                                    selectedSystemContacts = emptySet()
+                                    refresh()
+                                    Toast.makeText(context, "$count مخاطب به پویارا افزوده شد؛ موارد تکراری رد شدند",
+                                        Toast.LENGTH_LONG).show()
+                                }.onFailure { error ->
+                                    Toast.makeText(context, "واردکردن مخاطبین ناموفق بود: " +
+                                        error.localizedMessage.orEmpty().take(120),
+                                        Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        }
+                    ) { Text("افزودن انتخاب‌شده‌ها") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { importPickerVisible = false }) {
+                        Text("انصراف")
+                    }
+                }
+            )
         }
         if (addCategoryDialog) {
             AlertDialog(

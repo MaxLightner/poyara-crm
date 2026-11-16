@@ -12,8 +12,8 @@ android {
         applicationId = "com.poyara.crm"
         minSdk = 26
         targetSdk = 35
-        versionCode = 26
-        versionName = "0.21.0"
+        versionCode = 27
+        versionName = "0.22.0"
         // Set ONLY through CI secrets after the backend has been deployed.
         // Never put the Cloudflare API token here: this is an app-scoped pilot key.
         val centralUrl = (System.getenv("POYARA_CENTRAL_AGENT_URL") ?: "").replace("\\", "\\\\").replace("\"", "\\\"")

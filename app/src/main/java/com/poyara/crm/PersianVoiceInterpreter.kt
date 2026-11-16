@@ -255,8 +255,14 @@ internal object PersianVoiceInterpreter {
         } else if (hour == 12 && mentionsAm) hour = 0
 
         val minuteOfDay = hour * 60 + minute
+        // For a next-day business meeting at 9-12, the natural default is
+        // daytime. "Tomorrow at 11" should not be rejected as ambiguous.
+        val commonWorkingHour = hour in 9..12 &&
+            (text.contains("فردا") || text.contains("پسفردا") ||
+                text.contains("پس فردا"))
         if (hourWord != null && (hourWord.toIntOrNull() ?: 0) <= 12 &&
-            !mentionsPm && !mentionsAm && !mentionsNoon && hour in 1..12) {
+            !mentionsPm && !mentionsAm && !mentionsNoon &&
+            hour in 1..12 && !commonWorkingHour) {
             return VoiceAppointmentAction(category, null, minuteOfDay, leadDays(text), appointmentCorrection,
                 "ساعت $category صبح است یا عصر؟ با ویس کوتاه اصلاح کن.")
         }
@@ -292,6 +298,6 @@ internal object PersianVoiceInterpreter {
             "سه" to 3, "چهار" to 4, "پنج" to 5, "شش" to 6, "هفت" to 7)
         return words.entries.firstOrNull {
             text.contains(it.key + " روز قبل") || text.contains(it.key + " روز زودتر")
-        }?.value ?: 2
+        }?.value ?: 0
     }
 }

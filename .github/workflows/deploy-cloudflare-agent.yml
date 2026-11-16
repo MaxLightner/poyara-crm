@@ -49,6 +49,16 @@ jobs:
             POYARA_APP_ACCESS_KEY
         env:
           POYARA_APP_ACCESS_KEY: ${{ secrets.POYARA_APP_ACCESS_KEY }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify three Persian CRM commands against the deployed live AI
+        env:
+          POYARA_CENTRAL_AGENT_URL: ${{ steps.worker_deploy.outputs.deployment-url }}
+          POYARA_APP_ACCESS_KEY: ${{ secrets.POYARA_APP_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          node cloudflare-worker/scripts/live-smoke-test.mjs
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
