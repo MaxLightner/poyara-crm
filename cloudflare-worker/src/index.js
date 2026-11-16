@@ -35,9 +35,11 @@ function safeInput(body) {
       !/^[A-Za-z0-9_+\-/]+$/.test(body.timezone)) throw Error("Invalid timezone");
   const c = body.contact && typeof body.contact === "object" ? body.contact : {};
   const contact = Object.fromEntries(
-    ["name", "company", "role", "category"].map(field =>
+    ["name", "company", "role", "category", "phone"].map(field =>
       [field, typeof c[field] === "string" ? c[field].slice(0, 120) : ""])
   );
+  contact.extra_phones = Array.isArray(c.extra_phones) ?
+    c.extra_phones.filter(x => typeof x === "string").slice(0, 10) : [];
   const reminders = Array.isArray(body.reminders) ? body.reminders.slice(0, 15) : [];
   return {
     transcript: body.transcript,
@@ -51,19 +53,52 @@ function safeInput(body) {
   };
 }
 
-const INSTRUCTIONS = `You extract commands from Persian voice transcripts for POYARA CRM.
-Return ONLY a valid JSON object with EXACT keys corrected_text, contacts, reminders, actions, questions.
-contacts is an array of objects with keys: name, phone, company, role, category, address, note, related_to.
-reminders is an array of objects with keys: person_name, company, title, date_iso, time_local, remind_days_before, requires_confirmation.
-actions is an array of objects with keys: type, value, target_reminder_id, title, date_iso, time_local, remind_days_before, requires_confirmation.
-questions is an array of short Persian questions.
-Keep arrays empty when nothing qualifies. Never invent phone numbers, date or personal details.
-If multiple numbers were explicitly spoken for the same person, return first as main phone and add_phone actions for the others.
-If speaker corrects a surname or number, prefer the last clear correction. If names conflict or the target is unclear, ask.
-Use only these actions: correct_name, correct_phone, remove_phone, add_phone, set_company, set_role, set_category, create_reminder, update_reminder, delete_reminder, append_note.
-Only use supplied target_reminder_id values; no invented IDs. Deleting or changing uncertain events requires_confirmation true.
-For appointments use Gregorian YYYY-MM-DD and HH:mm in caller's timezone. Without explicit future date or morning/evening context ask clarification.
-You are only a planner: do not call anyone, delete files or directly update the CRM. The client validates proposals.`;
+const INSTRUCTIONS = `You are the Persian-speaking action planner for POYARA CRM.
+You receive ONE new voice transcript AND the CURRENT OPEN CRM PERSON with their
+name, company, main phone, extra_phones, role, category, and existing reminders.
+All incremental commands refer to the CURRENT PERSON unless another explicit
+person is unambiguously named. DO NOT require the speaker to repeat the name.
+
+Return a JSON object with keys corrected_text, contacts, reminders, actions, questions.
+contacts: array of objects {name,phone,company,role,category,address,note,related_to}.
+reminders: array of {person_name,company,title,date_iso,time_local,remind_days_before,requires_confirmation}.
+actions: array of {type,value,target_reminder_id,title,date_iso,time_local,remind_days_before,requires_confirmation}.
+questions: array of short Persian questions; empty if nothing unclear.
+All arrays MUST exist. All action "type" names MUST be one of:
+correct_name, correct_phone, remove_phone, add_phone, set_company,
+set_role, set_category, create_reminder, update_reminder, delete_reminder, append_note.
+Use Gregorian YYYY-MM-DD, HH:mm (24-hour), exact current local date and timezone.
+
+CRITICAL INTENT RULES:
+- "شماره دوم", "شماره دیگه", "یک شماره دیگر هم اضافه کن" mean add_phone for
+  the OPEN PERSON, not correct_phone or a new contact. Preserve the main number.
+  If two distinct numbers are spoken: contacts[0].phone=first, add_phone for the second.
+  Never invent missing digits, and avoid duplicates already in phone/extra_phones.
+- "سمتش مدیر است", "سمت این فرد مدیر" mean set_role("مدیر") even when
+  a role already exists; otherwise set_role for any explicit job title.
+- "فردا با ایشان جلسه دارم ساعت 11 یادآوری بگذار" means create_reminder
+  for TOMORROW at 11:00 local, remind_days_before=0. For 11 in a work context
+  without صباح/عصر, interpret 11:00 daytime, not 23:00.
+  For "ساعت 3" without morning/afternoon, ask whether 03:00 or 15:00.
+  Meeting title MUST include user's stated subject; meeting date and reminder
+  date are not separate unless explicitly specified. When user explicitly requests
+  one meeting reminder, emit ONE create_reminder action; do not also repeat that
+  reminder in the reminders array, to prevent duplicate records.
+- "برای فردا" must be resolved relative to now_local, and not as a date
+  that already passed. If no time at all, ask a question instead of inventing one.
+- Correct surname if speaker retracts a name. Never overwrite another contact
+  if current contact clearly differs from an explicitly named other person.
+- Do not hallucinate when audio is inaudible; ask a question.
+
+EXAMPLES (actions shape; always include all four arrays in response):
+User: "یه شماره دیگه هم برای این آقا اضافه کن 09151112233"
+Current phone: 09150000000 => actions:[{"type":"add_phone","value":"09151112233","requires_confirmation":false}]
+User: "سمتش مدیر هست" => actions:[{"type":"set_role","value":"مدیر","requires_confirmation":false}]
+User: "برای فردا ساعت ۱۱ صبح جلسه درباره خرید مبلمان بگذار و یادآوری کن"
+=> actions:[{"type":"create_reminder","title":"جلسه درباره خرید مبلمان","date_iso":"<tomorrow Gregorian>","time_local":"11:00","remind_days_before":0,"requires_confirmation":false}]
+Only reference reminder IDs actually present in the input. Never perform operations
+yourself: Android app validates and applies each proposal.
+Respond in JSON ONLY, with no markdown and no extra prose.`;
 
 function extractRaw(result) {
   if (typeof result === "string") return result;
