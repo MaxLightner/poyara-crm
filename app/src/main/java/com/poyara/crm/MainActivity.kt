@@ -136,6 +136,19 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
             agentPrefs.getBoolean("cloud_text_consent_v1", true))
     }
     var agentBusy by remember { mutableStateOf(false) }
+    // One-time migration for existing users from the older manual agent flow.
+    // The Settings opt-out remains available after this upgrade.
+    LaunchedEffect(centralAgent.configured) {
+        if (centralAgent.configured && !agentPrefs.contains("central_auto_enabled_v22")) {
+            agentPrivacyConsent = true
+            agentOptIn = true
+            agentPrefs.edit()
+                .putBoolean("cloud_text_consent_v1", true)
+                .putBoolean("enabled", true)
+                .putBoolean("central_auto_enabled_v22", true)
+                .apply()
+        }
+    }
     var pendingVoiceTranscript by rememberSaveable { mutableStateOf("") }
     var pendingVoiceFilePath by rememberSaveable { mutableStateOf("") }
     var voiceTranscribing by remember { mutableStateOf(false) }
@@ -437,6 +450,20 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
         personName = updatedName
         companyName = updatedCompany
         phone = updatedPhone
+        // "Another phone number" always targets the currently open customer.
+        // Extracted digits can be recorded locally before cloud completion.
+        val moreNumber = Regex("""(?:شماره|تلفن|موبایل).{0,32}(?:دیگه|دیگر|دوم|اضافه)|(?:یه|یک) شماره (?:دیگه|دیگر)""")
+            .containsMatchIn(PersianVoiceInterpreter.normalize(transcript))
+        if (moreNumber && personName.isNotBlank() && phone.isNotBlank()) {
+            PersianVoiceInterpreter.mobileNumbers(transcript)
+                .filter { normalizePhone(it) != normalizePhone(phone) &&
+                    extraPhones.none { saved -> normalizePhone(saved) == normalizePhone(it) } }
+                .forEach { extra ->
+                    extraPhones = extraPhones + extra
+                    showExtraPhones = true
+                    feedback += "شماره اضافی: $extra"
+                }
+        }
 
         // Save the spoken note first so a valid reminder can be linked to this
         // exact profile. Note-only profiles are allowed, no name/phone required.
@@ -732,6 +759,7 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                                             else if (number != normalizePhone(phone) &&
                                                 extraPhones.none { normalizePhone(it) == number })
                                                 extraPhones = extraPhones + number
+                                            showExtraPhones = extraPhones.isNotEmpty()
                                             save()
                                             notes += "شماره در مخاطب ثبت شد: $number"
                                         } else notes += "شماره پیشنهادی نامعتبر است؛ ثبت نشد."
@@ -833,12 +861,17 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                             questions.optString(i).takeIf { it.isNotBlank() }
                                 ?.let { notes += "سؤال Agent: " + it.take(240) }
                         }
-                        agentMessages = notes.distinct().ifEmpty { listOf("Agent دستور جدیدی تشخیص نداد.") }
+                        agentMessages = notes.distinct().ifEmpty {
+                            listOf("هوش مصنوعی دستور تازه‌ای تشخیص نداد؛ متن ویس حفظ شده است.")
+                        }
+                        lastVoiceActions = agentMessages
+                        if (extraPhones.isNotEmpty()) showExtraPhones = true
                         refresh()
                     }
                 }.onFailure { error ->
                     agentMessages = listOf("Agent در دسترس نبود؛ متن و تغییرات محلی حفظ شدند: " +
                         error.localizedMessage.orEmpty().take(160))
+                    lastVoiceActions = agentMessages
                 }
             }
         }
