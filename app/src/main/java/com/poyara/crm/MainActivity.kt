@@ -7,6 +7,7 @@ import android.app.TimePickerDialog
 import android.accounts.AccountManager
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.provider.ContactsContract
 import android.net.Uri
 import android.app.StatusBarManager
 import android.content.ComponentName
@@ -215,6 +216,11 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
     var fileRevision by remember { mutableIntStateOf(0) }
     var reminderRevision by remember { mutableIntStateOf(0) }
     var search by rememberSaveable { mutableStateOf("") }
+    var systemContacts by remember { mutableStateOf<List<PhoneContactCandidate>>(emptyList()) }
+    var importPickerVisible by remember { mutableStateOf(false) }
+    var importPickerLoading by remember { mutableStateOf(false) }
+    var importPickerSearch by remember { mutableStateOf("") }
+    var selectedSystemContacts by remember { mutableStateOf<Set<Long>>(emptySet()) }
     var filterTag by rememberSaveable { mutableStateOf("همه") }
     var filterRole by rememberSaveable { mutableStateOf("همه سمت‌ها") }
     var filterCategory by rememberSaveable { mutableStateOf("همه گروه‌ها") }
@@ -1264,6 +1270,55 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
         }
     }
 
+    val phoneReadPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            importPickerLoading = true
+            coroutineScope.launch {
+                val response = withContext(Dispatchers.IO) {
+                    runCatching { PhoneContactImporter.read(context.applicationContext) }
+                }
+                importPickerLoading = false
+                response.onSuccess { contacts ->
+                    systemContacts = contacts
+                    selectedSystemContacts = emptySet()
+                    importPickerSearch = ""
+                    importPickerVisible = true
+                }.onFailure { error ->
+                    Toast.makeText(context, "خواندن مخاطبین گوشی ممکن نشد: " +
+                        error.localizedMessage.orEmpty().take(120), Toast.LENGTH_LONG).show()
+                }
+            }
+        } else {
+            Toast.makeText(context, "برای انتخاب مخاطبین باید دسترسی خواندن مخاطبین را بدهی.",
+                Toast.LENGTH_LONG).show()
+        }
+    }
+
+    fun choosePhoneContacts() {
+        if (context.checkSelfPermission(Manifest.permission.READ_CONTACTS) ==
+            PackageManager.PERMISSION_GRANTED) {
+            importPickerLoading = true
+            coroutineScope.launch {
+                val result = withContext(Dispatchers.IO) {
+                    runCatching { PhoneContactImporter.read(context.applicationContext) }
+                }
+                importPickerLoading = false
+                result.onSuccess { contacts ->
+                    systemContacts = contacts
+                    selectedSystemContacts = emptySet()
+                    importPickerSearch = ""
+                    importPickerVisible = true
+                }.onFailure { error ->
+                    Toast.makeText(context, "بارگذاری مخاطبین ناموفق بود: " +
+                        error.localizedMessage.orEmpty().take(120),
+                        Toast.LENGTH_LONG).show()
+                }
+            }
+        } else phoneReadPermission.launch(Manifest.permission.READ_CONTACTS)
+    }
+
     val googleContactsPermissions = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { grants ->
@@ -2105,6 +2160,21 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                 )
             }
         } else {
+            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                Row(Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween) {
+                    OutlinedIconButton(onClick = { choosePhoneContacts() },
+                        modifier = Modifier.size(40.dp),
+                        enabled = !importPickerLoading) {
+                        Text("+", style = MaterialTheme.typography.titleLarge)
+                    }
+                    Text("مخاطبین", style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold)
+                }
+            }
+            if (importPickerLoading)
+                LinearProgressIndicator(Modifier.fillMaxWidth())
             Button(
                 onClick = { openMap(0L) },
                 modifier = Modifier.fillMaxWidth()
@@ -2206,6 +2276,98 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                     }
                 }
             }
+        }
+        if (importPickerVisible) {
+            AlertDialog(
+                onDismissRequest = { importPickerVisible = false },
+                title = { Text("افزودن مخاطب از موبایل") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = importPickerSearch,
+                            onValueChange = { importPickerSearch = it },
+                            label = { Text("جست‌وجوی نام یا شماره") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text("مخاطبین انتخاب‌شده: " + selectedSystemContacts.size,
+                            style = MaterialTheme.typography.bodySmall)
+                        val matching = systemContacts.filter { item ->
+                            importPickerSearch.isBlank() ||
+                                item.displayName.contains(importPickerSearch, ignoreCase = true) ||
+                                item.phones.any { it.contains(
+                                    PersianVoiceInterpreter.normalize(importPickerSearch)) }
+                        }
+                        LazyColumn(
+                            modifier = Modifier.fillMaxWidth().heightIn(max = 420.dp),
+                            verticalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            items(matching, key = { it.systemId }) { contact ->
+                                Row(
+                                    Modifier.fillMaxWidth()
+                                        .clickable {
+                                            selectedSystemContacts =
+                                                if (contact.systemId in selectedSystemContacts)
+                                                    selectedSystemContacts - contact.systemId
+                                                else selectedSystemContacts + contact.systemId
+                                        }.padding(vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Checkbox(
+                                        checked = contact.systemId in selectedSystemContacts,
+                                        onCheckedChange = { checked ->
+                                            selectedSystemContacts =
+                                                if (checked) selectedSystemContacts + contact.systemId
+                                                else selectedSystemContacts - contact.systemId
+                                        }
+                                    )
+                                    Column(Modifier.weight(1f)) {
+                                        Text(contact.displayName,
+                                            style = MaterialTheme.typography.bodyMedium)
+                                        Text(contact.phones.joinToString("، "),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.secondary,
+                                            maxLines = 2)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        enabled = selectedSystemContacts.isNotEmpty() && !importPickerLoading,
+                        onClick = {
+                            val selection = systemContacts.filter {
+                                it.systemId in selectedSystemContacts
+                            }
+                            importPickerLoading = true
+                            coroutineScope.launch {
+                                val result = withContext(Dispatchers.IO) {
+                                    runCatching { PhoneContactImporter.import(context, selection) }
+                                }
+                                importPickerLoading = false
+                                result.onSuccess { count ->
+                                    importPickerVisible = false
+                                    selectedSystemContacts = emptySet()
+                                    refresh()
+                                    Toast.makeText(context, "$count مخاطب به پویارا افزوده شد؛ موارد تکراری رد شدند",
+                                        Toast.LENGTH_LONG).show()
+                                }.onFailure { error ->
+                                    Toast.makeText(context, "واردکردن مخاطبین ناموفق بود: " +
+                                        error.localizedMessage.orEmpty().take(120),
+                                        Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        }
+                    ) { Text("افزودن انتخاب‌شده‌ها") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { importPickerVisible = false }) {
+                        Text("انصراف")
+                    }
+                }
+            )
         }
         if (addCategoryDialog) {
             AlertDialog(
