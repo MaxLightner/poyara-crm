@@ -257,6 +257,19 @@ export default {
     try { input = safeInput(JSON.parse(raw)); }
     catch { return json({error:"Invalid input"},422); }
     if (!env.AI) return json({error:"AI binding unavailable"},503);
+    // Explicit "tomorrow at 11" is already fully specified, so never let
+    // model latency or a malformed response block this routine appointment.
+    // All complex or ambiguous Persian instructions still go to the LLM.
+    const safeFallback = addMissingActions({
+      status:"ready",corrected_text:"",
+      contacts:[],reminders:[],actions:[],questions:[]
+    },input);
+    const clearBusinessMeeting = safeFallback.actions.some(a =>
+      a.type === "create_reminder" && a.date_iso && a.time_local);
+    if (clearBusinessMeeting && input.contact?.name &&
+        !/(?:اشتباه|اصلاح|تغییر|کنسل|لغو|حذف)/.test(input.transcript)) {
+      return json(safeFallback);
+    }
     try {
       const answer = await env.AI.run(MODEL,{
         messages: [
@@ -268,7 +281,12 @@ export default {
       });
       return json(parseProposal(answer, input));
     } catch (error) {
-      // Do not reveal model details or sensitive transcript in public error.
+      // Model output can be unavailable or not valid JSON under load.
+      // Apply only unambiguous, validated deterministic CRM actions, never
+      // fabricate dates or other personal details on an AI error.
+      if (input.contact?.name && safeFallback.actions.length > 0) {
+        return json({...safeFallback,source:"validated_fallback"});
+      }
       return json({error:"AI temporarily unavailable; local draft remains on the device"},503);
     }
   }
