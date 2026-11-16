@@ -123,14 +123,16 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
     var centralCheckBusy by remember { mutableStateOf(false) }
     var centralAgentStatus by remember { mutableStateOf("") }
     val agentPrefs = remember { context.getSharedPreferences("poyara_text_agent", Context.MODE_PRIVATE) }
+    // This team explicitly enables central voice-agent processing by default.
+    // The Settings toggle remains available to opt out. Disclose cloud transfer
+    // in Settings; do not silently fall back to an unconfigured local parser.
     var agentPrivacyConsent by remember {
-        mutableStateOf(agentPrefs.getBoolean("cloud_text_consent_v1", false))
+        mutableStateOf(agentPrefs.getBoolean("cloud_text_consent_v1", true))
     }
-    // Every installation, including upgrades from a paid-agent build, must
-    // explicitly consent before transcript text leaves the device.
     var agentOptIn by remember {
-        mutableStateOf(agentPrefs.getBoolean("enabled", false) &&
-            agentPrefs.getBoolean("cloud_text_consent_v1", false))
+        mutableStateOf(centralAgent.configured &&
+            agentPrefs.getBoolean("enabled", true) &&
+            agentPrefs.getBoolean("cloud_text_consent_v1", true))
     }
     var agentBusy by remember { mutableStateOf(false) }
     var pendingVoiceTranscript by rememberSaveable { mutableStateOf("") }
@@ -368,7 +370,7 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
     fun appendRawSpeech(transcript: String) {
         val value = transcript.trim()
         if (value.isBlank()) return
-        // User first reviews raw speech; no CRM commands run until Process is tapped.
+        // The raw transcript is retained. Voice processing happens automatically.
         val next = listOf(note.trim(), value).filter { it.isNotBlank() }
             .joinToString("\n\n")
         note = next
