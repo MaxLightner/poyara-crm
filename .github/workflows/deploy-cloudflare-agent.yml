@@ -72,6 +72,9 @@ jobs:
             *) echo "Unexpected Worker URL; refusing to ship APK" >&2; exit 1 ;;
           esac
           export POYARA_CENTRAL_AGENT_URL
+          # Verify the public route before shipping an APK that points to it.
+          health="$(curl --retry 4 --retry-delay 3 --retry-all-errors --connect-timeout 10 --max-time 30 -fsS "$POYARA_CENTRAL_AGENT_URL/health")"
+          printf '%s' "$health" | grep -q '"poyara-central-agent"'
           gradle --no-daemon :app:assembleDebug
           version="$(awk -F '"' '/versionName =/ {print $2; exit}' app/build.gradle.kts)"
           test -n "$version"
