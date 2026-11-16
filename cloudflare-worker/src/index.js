@@ -107,7 +107,74 @@ function extractRaw(result) {
   throw Error("AI output missing");
 }
 
-function parseProposal(result) {
+function normalizeDigits(text) {
+  return String(text || "").replace(/[۰-۹]/g, ch =>
+    String(ch.charCodeAt(0) - 0x06F0)).replace(/[٠-٩]/g, ch =>
+    String(ch.charCodeAt(0) - 0x0660));
+}
+function canonicalPhone(value) {
+  const raw = normalizeDigits(value).replace(/[^\d]/g, "");
+  if (/^09\d{9}$/.test(raw)) return raw;
+  if (/^989\d{9}$/.test(raw)) return "0" + raw.slice(2);
+  if (/^00989\d{9}$/.test(raw)) return "0" + raw.slice(4);
+  if (/^9\d{9}$/.test(raw)) return "0" + raw;
+  if (/^0\d{9,11}$/.test(raw)) return raw;
+  return "";
+}
+function addMissingActions(response, input) {
+  const spoken = normalizeDigits(input.transcript);
+  const actions = response.actions;
+  const current = input.contact || {};
+  const isSecondNumber = /(?:شماره|تلفن|موبایل).{0,35}(?:دیگه|دیگر|دوم|اضافه)|(?:یه|یک)\s+شماره\s+(?:دیگه|دیگر)/.test(spoken);
+  const hasPhoneAction = actions.some(a => a.type === "add_phone" || a.type === "correct_phone");
+  const existing = new Set([current.phone, ...(current.extra_phones || [])].map(canonicalPhone));
+  if (isSecondNumber && !hasPhoneAction) {
+    const candidates = [
+      ...response.contacts.map(c => c?.phone || ""),
+      ...Array.from(spoken.matchAll(/(?:\+98|0098|98|0)9[\d\s-]{9,20}/g), m => m[0])
+    ].map(canonicalPhone).filter(x => x && !existing.has(x));
+    for (const number of new Set(candidates).values()) {
+      actions.push({type:"add_phone",value:number,requires_confirmation:false});
+    }
+  }
+  const hasRoleAction = actions.some(a => a.type === "set_role");
+  if (!hasRoleAction && /(?:سمت|شغل|نقش|مدیر|مسئول)/.test(spoken)) {
+    const latestRole = response.contacts.find(c => typeof c?.role === "string" &&
+      c.role.trim())?.role || (/مدیر/.test(spoken) ? "مدیر" : "");
+    if (latestRole) actions.push({
+      type:"set_role",value:latestRole.slice(0,100),requires_confirmation:false
+    });
+  }
+  const hasMeeting = actions.some(a => a.type === "create_reminder") ||
+    response.reminders.length > 0;
+  // Deterministic fallback for the explicit common command "tomorrow 11".
+  if (!hasMeeting && /(?:جلسه|ملاقات|قرار)/.test(spoken) && /فردا/.test(spoken)) {
+    const matched = spoken.match(/ساعت\s*(?:حدود\s*)?(\d{1,2})(?::(\d{2}))?/);
+    const hour = matched ? Number(matched[1]) : -1;
+    const minute = matched ? Number(matched[2] || 0) : 0;
+    if (hour >= 9 && hour <= 12 && minute < 60 && input.now_local) {
+      const local = /^\d{4}-\d{2}-\d{2}/.exec(input.now_local)?.[0];
+      if (local) {
+        const day = new Date(local + "T00:00:00Z");
+        day.setUTCDate(day.getUTCDate() + 1);
+        const date = day.toISOString().slice(0,10);
+        const time = String(hour).padStart(2,"0") + ":" + String(minute).padStart(2,"0");
+        const statedSubject = spoken.match(/(?:درباره|در مورد|با موضوع)\s+(.{3,80}?)(?:\s+ساعت|\s+یادآوری|$)/)?.[1]?.trim();
+        actions.push({
+          type:"create_reminder",value:null,target_reminder_id:null,
+          title:"جلسه" + (statedSubject ? " درباره " + statedSubject : " با " +
+            (current.name || "مخاطب")),
+          date_iso:date,time_local:time,remind_days_before:0,
+          requires_confirmation:false
+        });
+      }
+    }
+  }
+  response.actions = actions.slice(0,16);
+  return response;
+}
+
+function parseProposal(result, input) {
   const raw = extractRaw(result).trim().replace(/^\x60\x60\x60(?:json)?\s*/i, "").replace(/\s*\x60\x60\x60$/, "");
   const proposal = JSON.parse(raw);
   if (!proposal || typeof proposal !== "object" ||
@@ -127,14 +194,14 @@ function parseProposal(result) {
     remind_days_before: Math.min(7, Math.max(0, Number(action.remind_days_before) || 0)),
     requires_confirmation: Boolean(action.requires_confirmation)
   }));
-  return {
-    status: "needs_review",
+  return addMissingActions({
+    status: proposal.questions.length ? "needs_review" : "ready",
     corrected_text: typeof proposal.corrected_text === "string" ? proposal.corrected_text.slice(0, 10000) : "",
     contacts: proposal.contacts.slice(0, 10),
     reminders: proposal.reminders.slice(0, 10),
     actions,
     questions: proposal.questions.slice(0, 8).filter(x => typeof x === "string").map(x => x.slice(0, 250))
-  };
+  }, input);
 }
 
 export default {
@@ -199,7 +266,7 @@ export default {
         max_completion_tokens:2200,
         temperature:0,
       });
-      return json(parseProposal(answer));
+      return json(parseProposal(answer, input));
     } catch (error) {
       // Do not reveal model details or sensitive transcript in public error.
       return json({error:"AI temporarily unavailable; local draft remains on the device"},503);
