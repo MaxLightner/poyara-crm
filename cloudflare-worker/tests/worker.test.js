@@ -79,3 +79,63 @@ test('rate limiter rejects requests before AI usage', async () => {
   assert.equal(r.status,429);
   assert.equal(called,false);
 });
+
+function agentWith(proposal) {
+  return { POYARA_APP_ACCESS_KEY:sharedCode,
+    AI:{run:async()=>({response:JSON.stringify({
+      corrected_text:"",
+      contacts:[],reminders:[],actions:[],questions:[],
+      ...proposal
+    })})}};
+}
+
+test('second phone utterance attaches to current open customer', async () => {
+  const env = agentWith({contacts:[{name:"حسینی",phone:"09151112233"}]});
+  const response = await worker.fetch(request({
+    transcript:"یه شماره دیگه برای همین آقا اضافه کن ۰۹۱۵۱۱۱۲۲۳۳",
+    timezone:"Asia/Tehran",now_local:"2026-11-16T13:00:00+03:30",
+    contact:{name:"حسینی",phone:"09150000000",extra_phones:[]}
+  }),env);
+  assert.equal(response.status,200);
+  const result=await response.json();
+  assert.deepEqual(result.actions.map(a=>a.type),["add_phone"]);
+  assert.equal(result.actions[0].value,"09151112233");
+});
+
+test('role-only followup becomes set_role on same contact', async () => {
+  const response = await worker.fetch(request({
+    transcript:"سمت این فرد مدیر هست",
+    timezone:"Asia/Tehran",now_local:"2026-11-16T10:00:00+03:30",
+    contact:{name:"حسینی",phone:"09150000000",role:""}
+  }),agentWith({}));
+  assert.equal(response.status,200);
+  const result=await response.json();
+  assert.equal(result.actions[0].type,"set_role");
+  assert.equal(result.actions[0].value,"مدیر");
+});
+
+test('tomorrow 11 business meeting generates one follow-up reminder', async () => {
+  const response = await worker.fetch(request({
+    transcript:"برای فردا با این فرد جلسه درباره خرید مبل دارم، ساعت 11 یادآوری تنظیم کن",
+    timezone:"Asia/Tehran",now_local:"2026-11-16T18:40:00+03:30",
+    contact:{name:"حسینی",phone:"09150000000",role:""}
+  }),agentWith({}));
+  assert.equal(response.status,200);
+  const result=await response.json();
+  assert.equal(result.actions.length,1);
+  assert.equal(result.actions[0].type,"create_reminder");
+  assert.equal(result.actions[0].date_iso,"2026-11-17");
+  assert.equal(result.actions[0].time_local,"11:00");
+  assert.match(result.actions[0].title,/خرید مبل/);
+});
+
+test('does not infer arbitrary early hour of meeting', async () => {
+  const response = await worker.fetch(request({
+    transcript:"فردا جلسه ساعت 3",
+    timezone:"Asia/Tehran",now_local:"2026-11-16T16:00:00+03:30",
+    contact:{name:"حسینی"}
+  }),agentWith({}));
+  assert.equal(response.status,200);
+  const result=await response.json();
+  assert.equal(result.actions.length,0);
+});
