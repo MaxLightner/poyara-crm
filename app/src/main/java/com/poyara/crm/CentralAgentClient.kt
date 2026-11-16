@@ -62,7 +62,11 @@ internal class CentralAgentClient {
                 .put("name", contact?.name.orEmpty().take(120))
                 .put("company", contact?.company.orEmpty().take(120))
                 .put("role", contact?.role.orEmpty().take(100))
-                .put("category", contact?.category.orEmpty().take(100)))
+                .put("category", contact?.category.orEmpty().take(100))
+                .put("phone", contact?.phone.orEmpty())
+                .put("extra_phones", JSONArray().apply {
+                    contact?.extraPhones?.take(10)?.forEach { put(it) }
+                }))
             .put("reminders", JSONArray().apply {
                 reminders.take(15).forEach { reminder ->
                     put(JSONObject()
