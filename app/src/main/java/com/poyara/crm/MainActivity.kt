@@ -792,21 +792,39 @@ private fun CrmHome(initialRecordId: Long, expandIncompleteProfile: Boolean) {
                                             val title = action.optString("title")
                                                 .takeIf { it.isNotBlank() && it != "null" }
                                                 ?: "جلسه با " + personName.ifBlank { companyName }
-                                            val duplicate = db.allReminders(includeDone = true).any {
-                                                it.entryId == recordId && it.dueAt == due &&
-                                                    it.title == title
-                                            }
-                                            if (!duplicate) {
-                                                val lead = action.optInt("remind_days_before", 0)
-                                                    .coerceIn(0, 7)
+                                            val existingAtTime = db.allReminders(includeDone = true)
+                                                .firstOrNull {
+                                                    it.entryId == recordId &&
+                                                        kotlin.math.abs(it.dueAt - due) < 60_000L &&
+                                                        (it.title.contains("جلسه") ==
+                                                            title.contains("جلسه"))
+                                                }
+                                            val lead = action.optInt("remind_days_before", 0)
+                                                .coerceIn(0, 7)
+                                            if (existingAtTime == null) {
                                                 val id = db.addReminder(recordId,
                                                     title.take(160), due, lead)
                                                 db.allReminders().firstOrNull { it.id == id }
                                                     ?.let { ReminderScheduler.schedule(context, it) }
                                                 needVoiceNotificationPermission = true
+                                                notes += "قرار در برنامه کاری ثبت شد: $title"
+                                            } else {
+                                                // The local recognizer may already have created
+                                                // the same appointment. Upgrade its subject
+                                                // rather than inserting a duplicate.
+                                                val updatedTitle = if (title.length > existingAtTime.title.length)
+                                                    title.take(160) else existingAtTime.title
+                                                if (!existingAtTime.done &&
+                                                    (updatedTitle != existingAtTime.title ||
+                                                        lead != existingAtTime.remindDaysBefore)) {
+                                                    db.updateReminder(existingAtTime.id, recordId,
+                                                        updatedTitle, due, lead)
+                                                    ReminderScheduler.cancel(context, existingAtTime.id)
+                                                    db.allReminders().firstOrNull { it.id == existingAtTime.id }
+                                                        ?.let { ReminderScheduler.schedule(context, it) }
+                                                }
+                                                notes += "قرار قبلی یافت و با توضیح جدید تکمیل شد."
                                             }
-                                            notes += if (duplicate) "این قرار قبلاً ثبت شده است."
-                                                else "قرار در برنامه کاری ثبت شد: $title"
                                         }
                                     }
                                     "update_reminder" -> {
