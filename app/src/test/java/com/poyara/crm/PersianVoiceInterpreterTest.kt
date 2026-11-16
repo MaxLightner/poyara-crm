@@ -134,4 +134,44 @@ class PersianVoiceInterpreterTest {
         assertTrue(updated.contains("شماره درست 09158151204"))
         assertEquals(0, "【خلاصه خودکار پویارا】".toRegex().findAll(updated).count())
     }
+    @Test fun tomorrowElevenInBusinessContextIsRegisteredAtElevenAM() {
+        val result = PersianVoiceInterpreter.parse(
+            "برای فردا با این شخص جلسه درباره خرید مبل دارم ساعت ۱۱ یادآوری تنظیم کن",
+            currentPerson = "حسینی",
+            currentPhone = "09150000000",
+            nowEpochMillis = now,
+            timezone = zone
+        )
+        assertEquals("جلسه", result.appointment?.category)
+        assertEquals(0, result.appointment?.leadDays)
+        val local = java.time.Instant.ofEpochMilli(result.appointment!!.dueAt!!)
+            .atZone(zone).toLocalDateTime()
+        assertEquals(LocalDate.of(2026,11,14), local.toLocalDate())
+        assertEquals(LocalTime.of(11,0), local.toLocalTime())
+    }
+
+    @Test fun secondPhoneIsDetectedWhileCurrentPrimaryIsPreserved() {
+        val result = PersianVoiceInterpreter.parse(
+            "یه شماره دیگه هم برای همین آقا اضافه کن ۰۹۱۵۱۱۱۲۲۳۳",
+            currentPerson = "حسینی",
+            currentPhone = "09150000000",
+            nowEpochMillis = now,
+            timezone = zone
+        )
+        assertEquals("09151112233", result.phone)
+        assertFalse(result.correctPhone)
+        assertEquals(listOf("09151112233"),
+            PersianVoiceInterpreter.mobileNumbers("یه شماره دیگه اضافه کن ۰۹۱۵۱۱۱۲۲۳۳"))
+    }
+
+    @Test fun followUpRoleIsExtractedWithoutMentioningPersonName() {
+        val result = PersianVoiceInterpreter.parse(
+            "سمت این فرد مدیر مجموعه است",
+            currentPerson = "حسینی",
+            currentPhone = "09150000000",
+            nowEpochMillis = now,timezone = zone
+        )
+        assertEquals("مدیر مجموعه",result.role)
+    }
+
 }
